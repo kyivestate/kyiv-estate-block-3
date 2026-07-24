@@ -348,7 +348,9 @@ def extract_listing(source_url):
         ))
     for item in flatten_jsonld(parser.json_ld):
         title = title or str(item.get("name", ""))
-        description = description or str(item.get("description", ""))
+        candidate_description = str(item.get("description", "")).strip()
+        if len(candidate_description) > len(description or ""):
+            description = candidate_description
         image = item.get("image", [])
         images.extend(image if isinstance(image, list) else [image])
     clean_images = []
