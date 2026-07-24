@@ -91,7 +91,7 @@ def database():
         yield connection
         connection.commit()
     except Exception as error:
-        print(f"Unhandled request error: {type(error).__name__}: {error}", flush=True)
+        print(f"Database transaction error: {type(error).__name__}: {error}", flush=True)
         connection.rollback()
         raise
     finally:
@@ -1503,8 +1503,9 @@ def app(environ, start_response):
         return reply(start_response, "404 Not Found", {"error": "Не знайдено"})
     except (ValueError, requests.RequestException, RuntimeError) as error:
         return reply(start_response, "400 Bad Request", {"error": str(error)})
-    except Exception:
-        return reply(start_response, "500 Internal Server Error", {"error": "Внутрішня помилка сервісу."})
+    except Exception as error:
+        print(f"Unhandled HTTP request error: {type(error).__name__}: {error}", flush=True)
+        return reply(start_response, "500 Internal Server Error", {"error": f"Service processing error: {type(error).__name__}: {str(error)[:240]}"})
 
 
 # Railway imports this module once per deployment, which makes the migration
