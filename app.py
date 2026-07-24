@@ -90,7 +90,8 @@ def database():
     try:
         yield connection
         connection.commit()
-    except Exception:
+    except Exception as error:
+        print(f"Unhandled request error: {type(error).__name__}: {error}", flush=True)
         connection.rollback()
         raise
     finally:
