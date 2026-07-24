@@ -371,7 +371,14 @@ def extract_listing(source_url):
     details = extract_details(detail_text)
     details["address"] = extract_address(detail_text, response.url)
     prices = convert_prices(details.get("price"), details.get("currency"))
-    clean_images = visually_unique_preview_urls(listing_photo_urls(clean_images, response.url))
+    clean_images = listing_photo_urls(clean_images, response.url)
+    # OLX pages often expose many full-resolution CDN assets. Fetching them all
+    # only for preview can exhaust a small Railway worker; final package
+    # deduplication still runs later on the downloaded assets.
+    if "olx.ua" not in urlparse(response.url).hostname.lower():
+        clean_images = visually_unique_preview_urls(clean_images)
+    else:
+        clean_images = clean_image_urls(clean_images)
     listing = {
         "internal_id": job_id,
         "title": clean_title,
