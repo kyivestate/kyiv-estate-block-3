@@ -133,19 +133,26 @@ def init_storage():
 
 
 def update_job(job_id, input_value, phase, progress=0, snapshot=None, package_path=None, uk_url=None, en_url=None, error=None):
-    init_storage()
-    with database() as db:
-        db.execute("""
-            INSERT INTO jobs (id, input_value, phase, progress, snapshot_json, package_path, uk_url, en_url, error)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(id) DO UPDATE SET
-                phase=excluded.phase, progress=excluded.progress,
-                snapshot_json=COALESCE(excluded.snapshot_json, jobs.snapshot_json),
-                package_path=COALESCE(excluded.package_path, jobs.package_path),
-                uk_url=COALESCE(excluded.uk_url, jobs.uk_url),
-                en_url=COALESCE(excluded.en_url, jobs.en_url),
-                error=excluded.error, updated_at=CURRENT_TIMESTAMP
-        """, (job_id, input_value, phase, progress, json.dumps(snapshot, ensure_ascii=False) if snapshot else None, package_path, uk_url, en_url, error))
+    # Metadata is useful for progress recovery, but it must never prevent an
+    # otherwise valid listing from being read. Railway's small persistent disk
+    # can temporarily be full while long-lived public packages are retained.
+    try:
+        with database() as db:
+            db.execute("""
+                INSERT INTO jobs (id, input_value, phase, progress, snapshot_json, package_path, uk_url, en_url, error)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    phase=excluded.phase, progress=excluded.progress,
+                    snapshot_json=COALESCE(excluded.snapshot_json, jobs.snapshot_json),
+                    package_path=COALESCE(excluded.package_path, jobs.package_path),
+                    uk_url=COALESCE(excluded.uk_url, jobs.uk_url),
+                    en_url=COALESCE(excluded.en_url, jobs.en_url),
+                    error=excluded.error, updated_at=CURRENT_TIMESTAMP
+            """, (job_id, input_value, phase, progress, json.dumps(snapshot, ensure_ascii=False) if snapshot else None, package_path, uk_url, en_url, error))
+    except sqlite3.OperationalError as storage_error:
+        if "full" not in str(storage_error).lower():
+            raise
+        print(f"Storage full: skipped non-critical job metadata for {job_id}", flush=True)
 
 
 def normalize_listing_input(raw):
