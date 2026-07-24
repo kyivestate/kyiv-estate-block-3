@@ -155,12 +155,8 @@ def normalize_listing_input(raw):
 
 
 def listing_id(source_url):
-    parsed = urlparse(source_url)
-    match = re.search(r"/(?:view/)?(\d{5,12})(?:/|$)", parsed.path)
-    if match:
-        return match.group(1)
-    slug = re.sub(r"[^a-zA-Z0-9]+", "-", parsed.path).strip("-")[-48:]
-    return slug or hashlib.sha256(source_url.encode()).hexdigest()[:12]
+    digest = hashlib.blake2s(source_url.strip().lower().encode(), digest_size=8).digest()
+    return str(10_000_000 + int.from_bytes(digest, "big") % 90_000_000)
 
 
 class ListingParser(HTMLParser):
@@ -335,7 +331,7 @@ def extract_listing(source_url):
     description = first(parser.meta, "og:description", "description", "twitter:description")
     # Rieltor's OG description is only a short price/area summary; its full text
     # is in .offer-view-section-text and is stored first by ListingParser.
-    page_text = "\n\n".join(parser.text_blocks[:12])
+    page_text = "\n\n".join(parser.text_blocks)[:20_000]
     if (urlparse(response.url).hostname or "").endswith("rieltor.ua"):
         description_node = BeautifulSoup(response.text, "html.parser").select_one(".offer-view-section-text")
         description = description_node.get_text("\n", strip=True) if description_node else page_text
@@ -368,7 +364,7 @@ def extract_listing(source_url):
     page_plain = html.unescape(re.sub(r"<[^>]*>", " ", response.text))
     page_plain = re.sub(r"\s+", " ", page_plain)
     clean_title = sanitize_title(html.unescape(title).strip())
-    clean_description = sanitize_public_text(html.unescape(description).strip())
+    clean_description = sanitize_public_text(html.unescape(description).strip())[:20_000]
     detail_text = " ".join(parser.meta.get("og:description", [])) + " " + page_plain
     details = extract_details(detail_text)
     details["address"] = extract_address(detail_text, response.url)
