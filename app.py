@@ -132,6 +132,44 @@ def init_storage():
         """)
 
 
+def reclaim_package_space(keep_id=""):
+    """Free only old, regenerable package caches before accepting a new job.
+
+    A Railway volume is deliberately small.  The package directory is a cache
+    for the browser editor; published Telegraph media is uploaded separately.
+    Keeping the newest packages while pruning stale caches prevents one full
+    disk from taking the public creator offline.
+    """
+    if not PACKAGES_ROOT.exists():
+        return
+    target_free = max(128, int(os.environ.get("KYIV_ESTATE_MIN_FREE_MB", "512"))) * 1024 * 1024
+    try:
+        if shutil.disk_usage(PACKAGES_ROOT).free >= target_free:
+            return
+    except OSError:
+        return
+    keep_count = max(2, int(os.environ.get("KYIV_ESTATE_PACKAGE_CACHE_KEEP", "6")))
+    candidates = [path for path in PACKAGES_ROOT.iterdir() if path.is_dir() and path.name != keep_id]
+    candidates.sort(key=lambda path: path.stat().st_mtime, reverse=True)
+    removable = candidates[keep_count:]
+    # When the volume is completely full, retaining only two recent editable
+    # packages is preferable to making every new public Telegraph fail.
+    if not removable and len(candidates) > 2:
+        removable = candidates[2:]
+    for package_root in reversed(removable):
+        try:
+            shutil.rmtree(package_root)
+            print(f"Pruned stale package cache: {package_root.name}", flush=True)
+        except OSError as cleanup_error:
+            print(f"Could not prune package cache {package_root.name}: {cleanup_error}", flush=True)
+            continue
+        try:
+            if shutil.disk_usage(PACKAGES_ROOT).free >= target_free:
+                break
+        except OSError:
+            break
+
+
 def update_job(job_id, input_value, phase, progress=0, snapshot=None, package_path=None, uk_url=None, en_url=None, error=None):
     # Metadata is useful for progress recovery, but it must never prevent an
     # otherwise valid listing from being read. Railway's small persistent disk
@@ -1251,6 +1289,7 @@ def create_package(payload):
     payload = dict(payload)
     payload["images"] = clean_image_urls(payload.get("images", []))
     job_id = re.sub(r"[^a-zA-Z0-9_-]", "", str(payload.get("internal_id", ""))) or hashlib.sha256(str(payload.get("source", "")).encode()).hexdigest()[:12]
+    reclaim_package_space(job_id)
     package_root = PACKAGES_ROOT / job_id
     existing_manifest = package_root / "manifest.json"
     previous_record = json.loads(existing_manifest.read_text(encoding="utf-8")) if existing_manifest.is_file() else {}
