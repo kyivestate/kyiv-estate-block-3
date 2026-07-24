@@ -1292,7 +1292,15 @@ def create_package(payload):
     reclaim_package_space(job_id)
     package_root = PACKAGES_ROOT / job_id
     existing_manifest = package_root / "manifest.json"
-    previous_record = json.loads(existing_manifest.read_text(encoding="utf-8")) if existing_manifest.is_file() else {}
+    previous_record = {}
+    if existing_manifest.is_file():
+        try:
+            previous_record = json.loads(existing_manifest.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as manifest_error:
+            # A full volume can interrupt a prior package write.  That partial
+            # cache must not make every retry for the same listing fail.
+            print(f"Discarding incomplete package {job_id}: {manifest_error}", flush=True)
+            shutil.rmtree(package_root, ignore_errors=True)
     photos_root = package_root / "photos"
     originals_root = package_root / "originals"
     assets_root = package_root / "assets"
