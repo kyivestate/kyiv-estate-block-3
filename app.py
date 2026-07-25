@@ -149,25 +149,26 @@ def reclaim_package_space(keep_id=""):
     except OSError:
         return
     keep_count = max(2, int(os.environ.get("KYIV_ESTATE_PACKAGE_CACHE_KEEP", "6")))
-    candidates = [path for path in PACKAGES_ROOT.iterdir() if path.is_dir() and path.name != keep_id]
-    candidates.sort(key=lambda path: path.stat().st_mtime, reverse=True)
-    removable = candidates[keep_count:]
-    # When the volume is completely full, retaining only two recent editable
-    # packages is preferable to making every new public Telegraph fail.
-    if not removable and len(candidates) > 2:
-        removable = candidates[2:]
-    for package_root in reversed(removable):
-        try:
-            shutil.rmtree(package_root)
-            print(f"Pruned stale package cache: {package_root.name}", flush=True)
-        except OSError as cleanup_error:
-            print(f"Could not prune package cache {package_root.name}: {cleanup_error}", flush=True)
+    # Both folders contain regenerated cache copies.  `listings` has the
+    # originals/finals and is usually larger than `packages`.
+    for cache_root in (PACKAGES_ROOT, DATA_ROOT / "listings"):
+        if not cache_root.exists():
             continue
-        try:
-            if shutil.disk_usage(PACKAGES_ROOT).free >= target_free:
-                break
-        except OSError:
-            break
+        candidates = [path for path in cache_root.iterdir() if path.is_dir() and path.name != keep_id]
+        candidates.sort(key=lambda path: path.stat().st_mtime, reverse=True)
+        removable = candidates[keep_count:] or (candidates[2:] if len(candidates) > 2 else [])
+        for cache_path in reversed(removable):
+            try:
+                shutil.rmtree(cache_path)
+                print(f"Pruned stale package cache: {cache_path.name}", flush=True)
+            except OSError as cleanup_error:
+                print(f"Could not prune package cache {cache_path.name}: {cleanup_error}", flush=True)
+                continue
+            try:
+                if shutil.disk_usage(PACKAGES_ROOT).free >= target_free:
+                    return
+            except OSError:
+                return
 
 
 def update_job(job_id, input_value, phase, progress=0, snapshot=None, package_path=None, uk_url=None, en_url=None, error=None):
@@ -202,7 +203,7 @@ def normalize_listing_input(raw):
 
 def listing_id(source_url):
     digest = hashlib.blake2s(source_url.strip().lower().encode(), digest_size=8).digest()
-    return str(10_000_000 + int.from_bytes(digest, "big") % 90_000_000)
+    return "kyivestate-" + str(10_000_000 + int.from_bytes(digest, "big") % 90_000_000)
 
 
 class ListingParser(HTMLParser):
@@ -412,7 +413,8 @@ def extract_listing(source_url):
     page_plain = html.unescape(re.sub(r"<[^>]*>", " ", response.text))
     page_plain = re.sub(r"\s+", " ", page_plain)
     clean_title = sanitize_title(html.unescape(title).strip())
-    clean_description = sanitize_public_text(html.unescape(description).strip())[:20_000]
+    original_description = html.unescape(description).strip()[:20_000]
+    clean_description = sanitize_public_text(original_description)[:20_000]
     detail_text = " ".join(parser.meta.get("og:description", [])) + " " + page_plain
     details = extract_details(detail_text)
     details["address"] = extract_address(detail_text, response.url)
@@ -429,7 +431,8 @@ def extract_listing(source_url):
         "internal_id": job_id,
         "title": clean_title,
         "description": clean_description,
-        "original_description": html.unescape(description).strip(),
+        "original_description": original_description,
+        "ai_description": editorial_ai_text(original_description),
         "images": clean_images,
         "source": response.url,
         "details": details,
@@ -475,7 +478,7 @@ def sanitize_title(value):
 
 def sanitize_public_text(value):
     value = html.unescape(re.sub(r"<[^>]+>", " ", value))
-    value = re.sub(r"[\t\r ]+", " ", value)
+    value = re.sub(r"[\t\r ]+", " ", value).replace(" ,", ",").replace(" .", ".")
     kept = []
     seen_sentences = set()
     for paragraph in re.split(r"\n+", value):
@@ -484,7 +487,13 @@ def sanitize_public_text(value):
         for sentence in sentences:
             sentence = sentence.strip(" \"'")
             key = re.sub(r"\s+", " ", sentence).casefold()
-            if not sentence or key in seen_sentences or any(phrase in key for phrase in BANNED_PUBLIC_PHRASES):
+            prohibited = (
+                r"\b(?:без|є|есть|no|without|with)\s+(?:коміс\w*|комисс\w*|commission\w*)\b",
+                r"\b(?:ріелтор\w*|риелтор\w*|realtor\w*|агент\w*|broker\w*)\b",
+                r"\b(?:власник\w*|владелец\w*|owner\w*)\b",
+                r"\b(?:дзвон\w*|звон\w*|телефону\w*|phone|contact\s+me)\b",
+            )
+            if not sentence or key in seen_sentences or any(phrase in key for phrase in BANNED_PUBLIC_PHRASES) or any(re.search(pattern, key, re.IGNORECASE) for pattern in prohibited):
                 continue
             seen_sentences.add(key)
             safe.append(sentence)
@@ -493,8 +502,20 @@ def sanitize_public_text(value):
     return "\n\n".join(kept).strip()
 
 
+def editorial_ai_text(value):
+    """Produce a publication-ready fallback when no external LLM is configured."""
+    clean = sanitize_public_text(value)
+    sentences = [item.strip() for item in re.split(r"(?<=[.!?])\s+", clean.replace("\n", " ")) if item.strip()]
+    paragraphs = []
+    for start in range(0, len(sentences), 3):
+        paragraph = " ".join(sentences[start:start + 3])
+        if paragraph:
+            paragraphs.append(paragraph[0].upper() + paragraph[1:] if len(paragraph) > 1 else paragraph.upper())
+    return "\n\n".join(paragraphs)[:20_000]
+
+
 def clean_image_urls(image_urls):
-    """Keep source order, but never request the same remote image twice."""
+    """Keep source order, but never request the same source asset twice."""
     cleaned = []
     seen = set()
     for value in image_urls or []:
@@ -502,7 +523,10 @@ def clean_image_urls(image_urls):
             continue
         parsed = urlparse(value.strip())
         # Fragment identifiers never select a different image and cause false duplicates.
-        normalized = urlunparse((parsed.scheme.lower(), parsed.netloc.lower(), parsed.path, parsed.params, parsed.query, ""))
+        # OLX exposes one asset many times with different `;s=WxH` variants.
+        # Its immutable file token is the only part that identifies a photo.
+        olx_file = re.search(r"/v1/files/([^/;?]+)/image", parsed.path, re.IGNORECASE)
+        normalized = ("olx:" + olx_file.group(1).lower()) if olx_file and parsed.netloc.lower().endswith("olxcdn.com") else urlunparse((parsed.scheme.lower(), parsed.netloc.lower(), parsed.path, "", "", ""))
         if normalized in seen:
             continue
         seen.add(normalized)
@@ -610,7 +634,7 @@ def visual_fingerprint_bytes(content):
 def same_visual_photo(candidate, fingerprints):
     width, height, signature = visual_fingerprint(candidate)
     for other_width, other_height, other_signature in fingerprints:
-        if abs(width / max(height, 1) - other_width / max(other_height, 1)) < 0.005 and (signature ^ other_signature).bit_count() <= 3:
+        if abs(width / max(height, 1) - other_width / max(other_height, 1)) < 0.012 and (signature ^ other_signature).bit_count() <= 8:
             return True
     return False
 
@@ -638,7 +662,7 @@ def visually_unique_preview_urls(urls):
         url, signature = fetched.get(index, (urls[index], None))
         if signature is not None:
             width, height, value = signature
-            if any(abs(width / max(height, 1) - ow / max(oh, 1)) < 0.005 and (value ^ ov).bit_count() <= 3 for ow, oh, ov in fingerprints):
+            if any(abs(width / max(height, 1) - ow / max(oh, 1)) < 0.012 and (value ^ ov).bit_count() <= 8 for ow, oh, ov in fingerprints):
                 continue
             fingerprints.append(signature)
         result.append(url)
@@ -669,9 +693,14 @@ def telegraph_image(path):
     """Upload a local D: asset once and reuse its durable Telegraph URL."""
     path = Path(path)
     digest = file_sha256(path)
-    init_storage()
-    with database() as db:
-        cached = db.execute("SELECT public_url FROM uploaded_assets WHERE sha256=?", (digest,)).fetchone()
+    cached = None
+    try:
+        init_storage()
+        with database() as db:
+            cached = db.execute("SELECT public_url FROM uploaded_assets WHERE sha256=?", (digest,)).fetchone()
+    except sqlite3.OperationalError as storage_error:
+        if "full" not in str(storage_error).lower():
+            raise
     if cached:
         return cached[0]
     content_type = mimetypes.guess_type(path.name)[0] or "image/jpeg"
@@ -687,11 +716,15 @@ def telegraph_image(path):
     if not isinstance(payload, list) or not payload or not payload[0].get("src"):
         raise RuntimeError("Telegraph не зберіг зображення.")
     public_url = urljoin("https://telegra.ph", str(payload[0]["src"]))
-    with database() as db:
-        db.execute(
-            "INSERT OR REPLACE INTO uploaded_assets (sha256,local_path,public_url,uploaded_at) VALUES (?,?,?,?)",
-            (digest, str(path), public_url, datetime.now(timezone.utc).isoformat()),
-        )
+    try:
+        with database() as db:
+            db.execute(
+                "INSERT OR REPLACE INTO uploaded_assets (sha256,local_path,public_url,uploaded_at) VALUES (?,?,?,?)",
+                (digest, str(path), public_url, datetime.now(timezone.utc).isoformat()),
+            )
+    except sqlite3.OperationalError as storage_error:
+        if "full" not in str(storage_error).lower():
+            raise
     return public_url
 
 
@@ -762,16 +795,21 @@ def github_media_images(paths, folder):
 def durable_image_urls(paths, folder):
     """Reuse uploaded assets and batch-publish only missing files."""
     paths = [Path(path) for path in paths]
-    init_storage()
     cached_urls, missing = {}, []
-    with database() as db:
-        for path in paths:
-            digest = file_sha256(path)
-            row = db.execute("SELECT public_url FROM uploaded_assets WHERE sha256=?", (digest,)).fetchone()
-            if row:
-                cached_urls[digest] = row[0]
-            else:
-                missing.append(path)
+    try:
+        init_storage()
+        with database() as db:
+            for path in paths:
+                digest = file_sha256(path)
+                row = db.execute("SELECT public_url FROM uploaded_assets WHERE sha256=?", (digest,)).fetchone()
+                if row:
+                    cached_urls[digest] = row[0]
+                else:
+                    missing.append(path)
+    except sqlite3.OperationalError as storage_error:
+        if "full" not in str(storage_error).lower():
+            raise
+        missing = list(paths)
     if missing:
         if MEDIA_GITHUB_REPO and GITHUB_TOKEN:
             with MEDIA_UPLOAD_LOCK:
@@ -779,14 +817,18 @@ def durable_image_urls(paths, folder):
         else:
             uploaded = [telegraph_image(path) for path in missing]
         now = datetime.now(timezone.utc).isoformat()
-        with database() as db:
-            for path, public_url in zip(missing, uploaded):
-                digest = file_sha256(path)
-                cached_urls[digest] = public_url
-                db.execute(
-                    "INSERT OR REPLACE INTO uploaded_assets (sha256,local_path,public_url,uploaded_at) VALUES (?,?,?,?)",
-                    (digest, str(path), public_url, now),
-                )
+        for path, public_url in zip(missing, uploaded):
+            cached_urls[file_sha256(path)] = public_url
+        try:
+            with database() as db:
+                for path, public_url in zip(missing, uploaded):
+                    db.execute(
+                        "INSERT OR REPLACE INTO uploaded_assets (sha256,local_path,public_url,uploaded_at) VALUES (?,?,?,?)",
+                        (file_sha256(path), str(path), public_url, now),
+                    )
+        except sqlite3.OperationalError as storage_error:
+            if "full" not in str(storage_error).lower():
+                raise
     return [cached_urls[file_sha256(path)] for path in paths]
 
 
@@ -884,6 +926,21 @@ def telegraph_content(payload, language, text, images=None, logo_url=None):
 
 
 def publish_page(title, content):
+    payload = {"access_token": token(), "title": title[:256], "author_name": "KYIV ESTATE", "author_url": CONTACT_URL if CONTACT_URL.startswith("https://") else "", "content": json.dumps(content, ensure_ascii=False), "return_content": False}
+    last_error = ""
+    for attempt in range(3):
+        try:
+            response = requests.post(f"{TELEGRAPH_API}/createPage", json=payload, timeout=35)
+            result = response.json()
+            if result.get("ok"):
+                return result["result"]["url"]
+            last_error = str(result.get("error", response.text[:300]))
+        except (requests.RequestException, ValueError) as error:
+            last_error = str(error)
+        if attempt < 2:
+            time.sleep(1 + attempt)
+    raise RuntimeError(last_error or "Telegraph could not create the page.")
+
     result = requests.post(f"{TELEGRAPH_API}/createPage", json={"access_token": token(), "title": title[:256], "author_name": "KYIV ESTATE", "author_url": CONTACT_URL if CONTACT_URL.startswith("https://") else "", "content": json.dumps(content, ensure_ascii=False), "return_content": False}, timeout=25).json()
     if not result.get("ok"):
         raise RuntimeError(result.get("error", "Telegraph не зміг створити сторінку."))
@@ -918,13 +975,10 @@ def publish_bilingual(payload):
     if not local_images:
         raise ValueError("Немає перевірених фотографій для Telegraph.")
     package_logo = package_root / "assets" / "kyiv-estate-logo.jpg"
-    if PUBLIC_BASE_URL:
-        package_id = quote(package["internal_id"], safe="")
-        image_urls = [f"{PUBLIC_BASE_URL}/packages/{package_id}/photos/{quote(path.name, safe='')}" for path in local_images]
-        logo_url = f"{PUBLIC_BASE_URL}/packages/{package_id}/assets/kyiv-estate-logo.jpg"
-    else:
-        media_urls = durable_image_urls([*local_images, package_logo], job_id)
-        image_urls, logo_url = media_urls[:-1], media_urls[-1]
+    # Telegraph pages must reference durable media, never a Railway cache that
+    # can be pruned after publication to keep the public creator healthy.
+    media_urls = durable_image_urls([*local_images, package_logo], job_id)
+    image_urls, logo_url = media_urls[:-1], media_urls[-1]
     show_title = bool(payload.get("include_title"))
     uk_title = f"{job_id} · {uk['title']}" if show_title else job_id
     en_title = f"{job_id} · {en['title']}" if show_title else job_id
