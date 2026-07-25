@@ -703,14 +703,27 @@ def telegraph_image(path):
             raise
     if cached:
         return cached[0]
-    content_type = mimetypes.guess_type(path.name)[0] or "image/jpeg"
-    with path.open("rb") as stream:
-        response = requests.post(
-            "https://telegra.ph/upload",
-            files={"file": (path.name, stream, content_type)},
-            headers={"User-Agent": "KYIV-ESTATE/1.0"},
-            timeout=90,
-        )
+    # Telegraph accepts JPEG/PNG but rejects some source WebP files and large
+    # originals. Convert only the outgoing copy; local certified photos stay
+    # untouched for the editor/PDF.
+    with Image.open(path) as source:
+        image = ImageOps.exif_transpose(source).convert("RGB")
+        if max(image.size) > 2560:
+            ratio = 2560 / max(image.size)
+            image = image.resize((round(image.width * ratio), round(image.height * ratio)), Image.Resampling.LANCZOS)
+        encoded = BytesIO()
+        quality = 90
+        image.save(encoded, format="JPEG", quality=quality, optimize=True, progressive=True)
+        while encoded.tell() > 4_500_000 and quality > 68:
+            quality -= 6
+            encoded = BytesIO()
+            image.save(encoded, format="JPEG", quality=quality, optimize=True, progressive=True)
+    response = requests.post(
+        "https://telegra.ph/upload",
+        files={"file": (path.stem + ".jpg", encoded.getvalue(), "image/jpeg")},
+        headers={"User-Agent": "KYIV-ESTATE/1.0"},
+        timeout=90,
+    )
     response.raise_for_status()
     payload = response.json()
     if not isinstance(payload, list) or not payload or not payload[0].get("src"):
