@@ -49,6 +49,7 @@ GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN", "").strip()
 MEDIA_UPLOAD_LOCK = threading.Lock()
 LOGO_URL = os.environ.get("KYIV_ESTATE_LOGO_URL", "").strip()
 LOGO_PATH = Path(os.environ.get("KYIV_ESTATE_LOGO_PATH", str(ROOT / "assets" / "kyiv-estate-logo.jpg"))).expanduser()
+BUILTIN_LOGO_URL = "https://raw.githubusercontent.com/realestateplatformapi-lang/listing-telegraph/main/assets/kyiv-estate-logo.jpg"
 PUBLIC_BASE_URL = os.environ.get("KYIV_ESTATE_PUBLIC_BASE_URL", "").strip().rstrip("/")
 if not PUBLIC_BASE_URL and os.environ.get("RAILWAY_PUBLIC_DOMAIN"):
     PUBLIC_BASE_URL = "https://" + os.environ["RAILWAY_PUBLIC_DOMAIN"].strip().strip("/")
@@ -988,10 +989,19 @@ def publish_bilingual(payload):
     if not local_images:
         raise ValueError("Немає перевірених фотографій для Telegraph.")
     package_logo = package_root / "assets" / "kyiv-estate-logo.jpg"
-    # Telegraph pages must reference durable media, never a Railway cache that
-    # can be pruned after publication to keep the public creator healthy.
-    media_urls = durable_image_urls([*local_images, package_logo], job_id)
-    image_urls, logo_url = media_urls[:-1], media_urls[-1]
+    # Prefer permanently uploaded media.  The public Telegraph upload endpoint
+    # occasionally returns HTTP 400 for otherwise valid JPEGs, so browser mode
+    # has a reliable HTTPS-source fallback instead of failing the whole page.
+    try:
+        media_urls = durable_image_urls([*local_images, package_logo], job_id)
+        image_urls, logo_url = media_urls[:-1], media_urls[-1]
+    except (RuntimeError, requests.RequestException, ValueError) as media_error:
+        source_images = [str(item.get("source_url", "")) for item in manifest.get("photos", [])]
+        if len(source_images) != len(local_images) or not all(url.startswith("https://") for url in source_images):
+            raise RuntimeError(f"Telegraph media upload failed and no source fallback is available: {media_error}") from media_error
+        print(f"Telegraph media fallback for {job_id}: {media_error}", flush=True)
+        image_urls = source_images
+        logo_url = LOGO_URL if LOGO_URL.startswith("https://") else BUILTIN_LOGO_URL
     show_title = bool(payload.get("include_title"))
     uk_title = f"{job_id} · {uk['title']}" if show_title else job_id
     en_title = f"{job_id} · {en['title']}" if show_title else job_id
