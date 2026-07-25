@@ -1579,7 +1579,7 @@ def app(environ, start_response):
             })
         if path == "/" and method == "GET":
             body = (ROOT / "index.html").read_bytes()
-            start_response("200 OK", [("Content-Type", "text/html; charset=utf-8"), ("Content-Length", str(len(body)))])
+            start_response("200 OK", [("Content-Type", "text/html; charset=utf-8"), ("Content-Length", str(len(body))), ("Cache-Control", "no-store, max-age=0")])
             return [body]
         if path == "/api/bridge/jobs/next" and method == "GET":
             if not bridge_authorized(environ):
