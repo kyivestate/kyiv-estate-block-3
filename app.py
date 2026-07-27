@@ -1579,7 +1579,7 @@ def make_pdf(payload):
     for source in photo_sources:
         try:
             if isinstance(source, str) and source.startswith("https://"):
-                response = requests.get(source, timeout=12)
+                response = requests.get(source, headers=REQUEST_HEADERS, timeout=12)
                 response.raise_for_status()
                 source = response.content
             append_pdf_image(source)
