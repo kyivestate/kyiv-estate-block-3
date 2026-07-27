@@ -419,8 +419,12 @@ def extract_listing(source_url):
     original_description = html.unescape(description).strip()[:20_000]
     clean_description = sanitize_public_text(original_description)[:20_000]
     detail_text = " ".join(parser.meta.get("og:description", [])) + " " + page_plain
-    details = extract_details(detail_text)
-    details["address"] = extract_address(detail_text, response.url)
+    # The title carries the listing category on Rieltor and is a more reliable
+    # signal than descriptive copy (which can mention a house nearby, etc.).
+    details = extract_details(detail_text, clean_title)
+    # Prefer the structured address embedded in the title.  It avoids the long
+    # navigation breadcrumbs found in the page body.
+    details["address"] = extract_address(detail_text, response.url, clean_title)
     prices = convert_prices(details.get("price"), details.get("currency"))
     clean_images = listing_photo_urls(clean_images, response.url)
     # Both sources can repeat the same photo under different CDN URLs.  Do the
@@ -444,7 +448,7 @@ def extract_listing(source_url):
     return listing
 
 
-def extract_details(page_text):
+def extract_details(page_text, classification_text=""):
     def match(pattern):
         found = re.search(pattern, page_text, re.IGNORECASE)
         return found.groups() if found else ()
@@ -453,17 +457,29 @@ def extract_details(page_text):
     area = match(r"(\d[\d\s\u00a0]*(?:[.,]\d+)?)\s*/\s*\d+(?:[.,]\d+)?\s*/\s*\d+(?:[.,]\d+)?\s*(?:м²|м2|m²|m2)") or match(r"(\d[\d\s\u00a0]*(?:[.,]\d+)?)\s*(?:м²|м2|m²|m2)")
     floor = match(r"(?:поверх|пов\.)\s*(\d+)\s*(?:з|/)\s*(\d+)") or match(r"(\d+)\s*(?:поверх|пов\.)\s*(?:з|/)\s*(\d+)") or match(r"(\d+)\s*поверх\s*(\d+)\s*-?\s*пов") or match(r"(?:поверх|пов\.)\s*(\d+)")
     storeys = match(r"\b(\d+)\s*[-–]?\s*(?:х|x)?\s*поверх\w*")
-    rooms = match(r"(?:кімнат(?:и|а)?|комнат(?:ы|а)?|rooms?)\s*[:№-]?\s*(\d+)") or match(r"\b(\d+)\s*[-–]?\s*(?:кімнат\w*|комнат\w*|room)" )
+    # Never accept an arbitrary long number as a room count: on some pages the
+    # number next to the area was incorrectly captured as rooms.
+    room_values = []
+    for pattern in (
+        r"(?:кількість\s+)?(?:кімнат(?:и|а)?|комнат(?:ы|а)?|rooms?)\s*[:№-]?\s*(\d{1,2})(?!\d)",
+        r"\b(\d{1,2})\s*[-–]?\s*(?:кімнат\w*|комнат\w*|rooms?)\b",
+    ):
+        room_values.extend(int(value) for value in re.findall(pattern, page_text, re.IGNORECASE) if 0 < int(value) <= 20)
     land = match(r"(?:ділян(?:ка|ки)|участ(?:ок|ка)|land)\s*[:№-]?\s*(\d+(?:[.,]\d+)?)\s*(сот(?:ок|ки)?|га|hectares?)")
-    lowered = page_text.casefold()
+    lowered = (classification_text or page_text).casefold()
     property_type = "house" if re.search(r"\b(?:будинок|дом|котедж|house|townhouse|таунхаус)\b", lowered) else "commercial" if re.search(r"\b(?:комерц\w*|склад\w*|офіс\w*|магазин\w*|warehouse|office|retail)\b", lowered) else "apartment"
     currency = {"$": "USD", "USD": "USD", "€": "EUR", "EUR": "EUR", "₴": "UAH", "грн": "UAH", "грн.": "UAH"}
-    return {"price": price[0].strip() if price else "", "currency": currency.get(price[1].upper(), "UAH") if price else "UAH", "area": area[0] if area else "", "floor": floor[0] if floor else "", "total_floors": floor[1] if len(floor) > 1 else (storeys[0] if property_type == "house" and storeys else ""), "rooms": rooms[0] if rooms else "", "land_area": " ".join(land) if land else "", "property_type": property_type}
+    return {"price": price[0].strip() if price else "", "currency": currency.get(price[1].upper(), "UAH") if price else "UAH", "area": area[0].strip() if area else "", "floor": floor[0] if floor else "", "total_floors": floor[1] if len(floor) > 1 else (storeys[0] if property_type == "house" and storeys else ""), "rooms": str(room_values[0]) if room_values else "", "land_area": " ".join(land) if land else "", "property_type": property_type}
 
 
-def extract_address(page_text, source_url):
+def extract_address(page_text, source_url, title=""):
     if "rieltor.ua" not in source_url.lower():
         return ""
+    # Rieltor uses: "Продаж квартир: <full address> - Оголошення №...".
+    # This is the clean address, unlike the site's navigation breadcrumbs.
+    from_title = re.search(r":\s*(.+?)\s*[-–]\s*(?:Оголошення|Announcement)\b", title, re.IGNORECASE)
+    if from_title:
+        return re.sub(r"\s+", " ", from_title.group(1)).strip(" ,·-")
     patterns = (
         r"(?:Київ|Киев)\s*[,·-]?\s*[^,]{0,55}?(?:вул\.|вулиця|проспект|пр-т|наб\.|пров\.)\s*[^,]{2,70}",
         r"(?:вул\.|вулиця|проспект|пр-т|наб\.|пров\.)\s*[^,]{2,70}",
@@ -703,9 +719,10 @@ def property_detail_rows(details, language):
         "area": "Загальна площа" if uk else "Total area",
         "floor": "Поверх" if uk else "Floor",
         "total_floors": "Поверховість" if uk else "Total floors",
-        "storeys": "Поверхів" if uk else "Storeys",
+        "storeys": "Поверховість" if uk else "Total floors",
         "rooms": "Кількість кімнат" if uk else "Rooms",
         "land": "Площа ділянки" if uk else "Land area",
+        "address": "Адреса" if uk else "Address",
     }
     area = f"{str(details.get('area')).strip()} м²" if details.get("area") else ""
     rooms = f"{details.get('rooms')} {'кімнати' if uk else 'rooms'}" if details.get("rooms") else ""
@@ -716,7 +733,11 @@ def property_detail_rows(details, language):
     elif kind == "commercial":
         rows.append((labels["floor"], str(details.get("floor", ""))))
     else:
-        rows.extend([(labels["floor"], str(details.get("floor", ""))), (labels["total_floors"], str(details.get("total_floors", ""))), (labels["rooms"], rooms)])
+        floor = str(details.get("floor", ""))
+        total_floors = str(details.get("total_floors", ""))
+        floor_value = " / ".join(value for value in (floor, total_floors) if value)
+        rows.extend([(labels["floor"], floor_value), (labels["rooms"], rooms)])
+    rows.append((labels["address"], str(details.get("address", ""))))
     return [(label, value) for label, value in rows if value]
 
 

@@ -131,11 +131,19 @@ class AppTests(unittest.TestCase):
         commercial = app.extract_details("Оренда теплого складу класу B+. 200 грн 1 000 м² Поверх 1")
         house = app.extract_details("Сучасний 3-х поверховий будинок. 3 999 $ 500 м² 7 кімнат Ділянка 10 соток")
         self.assertEqual(apartment["property_type"], "apartment")
-        self.assertEqual(app.property_detail_rows(apartment, "uk"), [("Загальна площа", "70.30 м²"), ("Поверх", "1"), ("Поверховість", "5"), ("Кількість кімнат", "2 кімнати")])
+        self.assertEqual(app.property_detail_rows(apartment, "uk"), [("Загальна площа", "70.30 м²"), ("Поверх", "1 / 5"), ("Кількість кімнат", "2 кімнати")])
         self.assertEqual(commercial["property_type"], "commercial")
         self.assertEqual(app.property_detail_rows(commercial, "uk"), [("Загальна площа", "1 000 м²"), ("Поверх", "1")])
         self.assertEqual(house["property_type"], "house")
-        self.assertEqual(app.property_detail_rows(house, "uk"), [("Загальна площа", "500 м²"), ("Кількість кімнат", "7 кімнати"), ("Площа ділянки", "10 соток"), ("Поверхів", "3")])
+        self.assertEqual(app.property_detail_rows(house, "uk"), [("Загальна площа", "500 м²"), ("Кількість кімнат", "7 кімнати"), ("Площа ділянки", "10 соток"), ("Поверховість", "3")])
+
+    def test_rieltor_uses_clean_title_address_and_area_is_not_a_room_count(self):
+        title = "Продаж квартир: Мечникова вул. (Кловський), 11-А, Печерський р-н, Київ - Оголошення №12519316"
+        address = app.extract_address("Київ Печерський р-н Продаж квартир", "https://rieltor.ua/flats-sale/view/12519316/", title)
+        self.assertEqual(address, "Мечникова вул. (Кловський), 11-А, Печерський р-н, Київ")
+        details = app.extract_details("Продаж квартир. Площа 165 м². Поверх 5 з 11", title)
+        self.assertEqual(details["property_type"], "apartment")
+        self.assertEqual(details["rooms"], "")
 
     def test_telegraph_uses_clean_source_price_and_property_rows(self):
         content = app.telegraph_content(self.payload(), "uk", "Чистий опис.")
@@ -143,7 +151,7 @@ class AppTests(unittest.TestCase):
         self.assertIn("Ціна: ", text); self.assertIn("97 000 $", text)
         self.assertIn("Загальна площа: ", text); self.assertIn("97 м²", text)
         self.assertIn("Поверх: ", text); self.assertIn("7", text)
-        self.assertIn("Поверховість: ", text); self.assertIn("18", text)
+        self.assertIn("Поверх: ", text); self.assertIn("7 / 18", text)
         self.assertNotIn("💰", text)
 
     def test_editor_keeps_both_description_versions_editable_and_moves_language_switch(self):
