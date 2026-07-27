@@ -159,6 +159,13 @@ class AppTests(unittest.TestCase):
             self.assertTrue(details["land_area"])
         self.assertEqual(app.extract_details("Будинок. Площа ділянки: 10 сот.", "Продаж будинків")["land_area"], "10 соток")
 
+    def test_house_land_area_can_come_from_full_offer_description(self):
+        title = "Продаж будинків: Голосіївський район, Київ - Оголошення №77"
+        full_description = "Сучасний будинок. Площа ділянки: 10 соток."
+        details = app.extract_details(full_description, title)
+        self.assertEqual(details["property_type"], "house")
+        self.assertEqual(details["land_area"], "10 соток")
+
     def test_rieltor_uses_clean_title_address_and_area_is_not_a_room_count(self):
         title = "Продаж квартир: Мечникова вул. (Кловський), 11-А, Печерський р-н, Київ - Оголошення №12519316"
         address = app.extract_address("Київ Печерський р-н Продаж квартир", "https://rieltor.ua/flats-sale/view/12519316/", title)
