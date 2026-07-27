@@ -126,6 +126,15 @@ class AppTests(unittest.TestCase):
     def test_title_removes_advertisement_number_prefix(self):
         self.assertEqual(app.sanitize_title("Advertisement # 4512: Apartment in Kyiv"), "Apartment in Kyiv")
 
+    def test_title_and_ai_text_remove_listing_number_and_are_editorially_distinct(self):
+        title = "Продаж квартир: Мечникова вул., 11-А - Оголошення №12519316"
+        source = "Оголошення №12519316. Світла квартира з ремонтом поруч із центром."
+        ai_text = app.editorial_ai_text(source, title)
+        self.assertNotIn("12519316", app.sanitize_title(title))
+        self.assertNotIn("12519316", ai_text)
+        self.assertIn("Представляємо ретельно відібрану пропозицію", ai_text)
+        self.assertNotEqual(app.sanitize_public_text(source), ai_text)
+
     def test_property_details_follow_apartment_commercial_and_house_templates(self):
         apartment = app.extract_details("Продаж 2-кімнатної квартири. 450 000 $ 70.30 м² Поверх 1 з 5")
         commercial = app.extract_details("Оренда теплого складу класу B+. 200 грн 1 000 м² Поверх 1")

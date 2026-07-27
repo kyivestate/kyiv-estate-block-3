@@ -416,7 +416,7 @@ def extract_listing(source_url):
     page_plain = html.unescape(re.sub(r"<[^>]*>", " ", response.text))
     page_plain = re.sub(r"\s+", " ", page_plain)
     clean_title = sanitize_title(html.unescape(title).strip())
-    original_description = html.unescape(description).strip()[:20_000]
+    original_description = strip_listing_references(html.unescape(description)).strip()[:20_000]
     clean_description = sanitize_public_text(original_description)[:20_000]
     detail_text = " ".join(parser.meta.get("og:description", [])) + " " + page_plain
     # The title carries the listing category on Rieltor and is a more reliable
@@ -491,7 +491,13 @@ def extract_address(page_text, source_url, title=""):
     return ""
 
 
+def strip_listing_references(value):
+    """Remove marketplace record numbers; they are not part of a public listing."""
+    return re.sub(r"\s*[-–—|·]?\s*(?:оголошення|advertisement|announcement)\s*#?\s*№?\s*\d+\b\s*[:|·—-]*", "", str(value or ""), flags=re.IGNORECASE)
+
+
 def sanitize_title(value):
+    value = strip_listing_references(value)
     value = re.sub(r"^\s*(?:advertisement|оголошення)\s*#?\s*\d*\s*[:|·—-]*\s*", "", value, flags=re.IGNORECASE)
     value = re.sub(r"(?:Ресурс|Resource)\s*\d+.*$", "", value, flags=re.IGNORECASE)
     value = re.sub(r"\s*[-|·]\s*(?:RIELTOR\.UA|OLX(?:\.UA)?)\s*$", "", value, flags=re.IGNORECASE)
@@ -499,7 +505,7 @@ def sanitize_title(value):
 
 
 def sanitize_public_text(value):
-    value = html.unescape(re.sub(r"<[^>]+>", " ", value))
+    value = strip_listing_references(html.unescape(re.sub(r"<[^>]+>", " ", value)))
     value = re.sub(r"[\t\r ]+", " ", value).replace(" ,", ",").replace(" .", ".")
     kept = []
     seen_sentences = set()
@@ -525,7 +531,7 @@ def sanitize_public_text(value):
 
 
 def editorial_ai_text(value, title=""):
-    """Create a clean, publication-ready description without inventing facts."""
+    """Create a distinct, polished agency-style description without inventing facts."""
     clean = sanitize_public_text(value)
     if title:
         clean = re.sub(re.escape(sanitize_title(title)), "", clean, flags=re.IGNORECASE)
@@ -536,7 +542,20 @@ def editorial_ai_text(value, title=""):
         paragraph = " ".join(sentences[start:start + 3])
         if paragraph:
             paragraphs.append(paragraph[0].upper() + paragraph[1:] if len(paragraph) > 1 else paragraph.upper())
-    return "\n\n".join(paragraphs)[:20_000]
+    polished_title = sanitize_title(title)
+    if polished_title:
+        intro = f"Представляємо ретельно відібрану пропозицію: {polished_title}. Об’єкт поєднує виразні характеристики та потенціал, який варто оцінити особисто."
+    else:
+        intro = "Представляємо ретельно відібрану пропозицію нерухомості з характеристиками, що заслуговують на увагу."
+    closing = "Запрошуємо ознайомитися з деталями та оцінити всі переваги об’єкта особисто."
+    candidate = "\n\n".join([intro, *paragraphs, closing]).strip()
+    # Guard against a mechanical copy: the AI card must offer a genuinely
+    # different editorial version while keeping every source fact intact.
+    original_key = re.sub(r"\W+", "", clean).casefold()
+    candidate_key = re.sub(r"\W+", "", candidate).casefold()
+    if clean and (candidate_key == original_key or candidate_key.startswith(original_key)):
+        candidate = f"{intro}\n\n{clean}\n\n{closing}"
+    return candidate[:20_000]
 
 
 def clean_image_urls(image_urls):
