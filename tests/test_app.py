@@ -122,6 +122,7 @@ class AppTests(unittest.TestCase):
             app.sanitize_title("Apartment - RIELTOR.UAResource 1Resource 1"),
             "Apartment",
         )
+        self.assertEqual(app.sanitize_title("Apartment RIELTOR.UA"), "Apartment")
 
     def test_title_removes_advertisement_number_prefix(self):
         self.assertEqual(app.sanitize_title("Advertisement # 4512: Apartment in Kyiv"), "Apartment in Kyiv")
