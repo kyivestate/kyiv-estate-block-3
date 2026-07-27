@@ -735,9 +735,10 @@ def property_detail_rows(details, language):
     else:
         floor = str(details.get("floor", ""))
         total_floors = str(details.get("total_floors", ""))
-        floor_value = " / ".join(value for value in (floor, total_floors) if value)
+        floor_value = "/".join(value for value in (floor, total_floors) if value)
         rows.extend([(labels["floor"], floor_value), (labels["rooms"], rooms)])
-    rows.append((labels["address"], str(details.get("address", ""))))
+    address = details.get("address" if uk else "address_en") or details.get("address", "")
+    rows.append((labels["address"], str(address)))
     return [(label, value) for label, value in rows if value]
 
 
