@@ -418,7 +418,9 @@ def extract_listing(source_url):
     clean_title = sanitize_title(html.unescape(title).strip())
     original_description = strip_listing_references(html.unescape(description)).strip()[:20_000]
     clean_description = sanitize_public_text(original_description)[:20_000]
-    detail_text = " ".join(parser.meta.get("og:description", [])) + " " + page_plain
+    # Rieltor keeps key house facts such as land area in the full offer text,
+    # not in its short OG description or the navigation-heavy page body.
+    detail_text = " ".join(parser.meta.get("og:description", [])) + " " + page_plain + " " + original_description
     # The title carries the listing category on Rieltor and is a more reliable
     # signal than descriptive copy (which can mention a house nearby, etc.).
     details = extract_details(detail_text, clean_title)
