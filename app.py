@@ -467,9 +467,13 @@ def extract_details(page_text, classification_text=""):
         r"\b(\d{1,2})\s*[-–]?\s*(?:кімнат\w*|комнат\w*|rooms?)\b",
     ):
         room_values.extend(int(value) for value in re.findall(pattern, page_text, re.IGNORECASE) if 0 < int(value) <= 20)
-    land = match(r"(?:(?:площа\s+)?(?:земельн\w*\s+)?(?:ділян\w*|участ\w*|land\s+(?:area|plot)?))\s*[:№-]?\s*(\d+(?:[.,]\d+)?)\s*(сот(?:\.?|ок|ки)?|га|гектар\w*|hectares?)")
     lowered = (classification_text or page_text).casefold()
     property_type = "house" if re.search(r"\b(?:будин\w*|дом\w*|котедж\w*|house\w*|townhouse|таунхаус\w*)\b", lowered) else "commercial" if re.search(r"\b(?:комерц\w*|склад\w*|офіс\w*|магазин\w*|warehouse|office|retail)\b", lowered) else "apartment"
+    land = match(r"(?:(?:площа\s+)?(?:земельн\w*\s+)?(?:ділян\w*|участ\w*|land\s+(?:area|plot)?))\s*[:№-]?\s*(\d+(?:[.,]\d+)?)\s*(сот(?:\.?|ок|ки)?|га|гектар\w*|hectares?)")
+    # Rieltor also writes compact fact rows such as "839 м² | 36 соток".
+    # A bare plot unit is unambiguous for a house and must reach the editor.
+    if property_type == "house" and not land:
+        land = match(r"\b(\d+(?:[.,]\d+)?)\s*(сот(?:\.?|ок|ки)?|га|гектар\w*|hectares?)\b")
     currency = {"$": "USD", "USD": "USD", "€": "EUR", "EUR": "EUR", "₴": "UAH", "грн": "UAH", "грн.": "UAH"}
     house_storeys = storeys[0] if property_type == "house" and storeys else (floor[0] if property_type == "house" and len(floor) == 1 else "")
     land_area = ""
