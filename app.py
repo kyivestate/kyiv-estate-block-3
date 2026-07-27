@@ -660,7 +660,10 @@ def visually_unique_preview_urls(urls):
         except (requests.RequestException, OSError, ValueError):
             return index, url, None
     fetched = {}
-    with ThreadPoolExecutor(max_workers=12) as pool:
+    # Railway has a small memory envelope.  A few full-resolution OLX images
+    # can be several megabytes each, so bounded concurrency avoids an upstream
+    # 502 while retaining visual de-duplication for every source.
+    with ThreadPoolExecutor(max_workers=3) as pool:
         for future in as_completed([pool.submit(fetch, item) for item in enumerate(urls)]):
             index, url, signature = future.result()
             fetched[index] = (url, signature)
