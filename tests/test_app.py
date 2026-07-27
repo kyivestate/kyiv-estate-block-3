@@ -146,10 +146,12 @@ class AppTests(unittest.TestCase):
         self.assertIn("Поверховість: ", text); self.assertIn("18", text)
         self.assertNotIn("💰", text)
 
-    def test_editor_keeps_both_description_versions_read_only_and_moves_language_switch(self):
+    def test_editor_keeps_both_description_versions_editable_and_moves_language_switch(self):
         interface = (app.ROOT / "index.html").read_text(encoding="utf-8")
-        self.assertIn('<textarea id="originalText" readonly>', interface)
-        self.assertIn('<textarea id="text" readonly>', interface)
+        self.assertIn('<textarea id="originalText">', interface)
+        self.assertIn('<textarea id="text">', interface)
+        self.assertIn("originalTranslations", interface)
+        self.assertIn("Download PDFs (UA + EN)", interface)
         self.assertGreater(interface.index('id="topUk"'), interface.index('id="extract"'))
 
     def test_initial_ai_request_does_not_look_like_all_photos_unchecked(self):
