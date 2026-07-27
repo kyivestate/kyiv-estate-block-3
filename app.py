@@ -35,6 +35,8 @@ import requests
 from bs4 import BeautifulSoup
 from PIL import Image, ImageOps
 
+PILImage = Image
+
 ROOT = Path(__file__).parent
 PORT = int(os.environ.get("PORT", "8080"))
 DATA_ROOT = Path(os.environ.get("DATA_ROOT", str(ROOT / "data")))
@@ -1551,7 +1553,17 @@ def make_pdf(payload):
                 local_photos = sorted(path for path in local_root.iterdir() if path.is_file())[:MAX_PHOTOS]
     def append_pdf_image(source):
         if isinstance(source, (bytes, bytearray)):
-            reader_source, image_source = BytesIO(source), BytesIO(source)
+            # The browser flow fetches originals from OLX/Rieltor. Re-encode one
+            # image at a time for the PDF so a large gallery cannot exhaust the
+            # Railway worker's memory before the document is built.
+            with PILImage.open(BytesIO(source)) as original:
+                image = ImageOps.exif_transpose(original).convert("RGB")
+                if max(image.size) > 1600:
+                    ratio = 1600 / max(image.size)
+                    image = image.resize((round(image.width * ratio), round(image.height * ratio)), Image.Resampling.LANCZOS)
+                encoded = BytesIO()
+                image.save(encoded, format="JPEG", quality=82, optimize=True)
+            reader_source = image_source = BytesIO(encoded.getvalue())
         else:
             reader_source = image_source = str(source)
         reader = ImageReader(reader_source)
@@ -1563,18 +1575,13 @@ def make_pdf(payload):
     if local_photos:
         photo_sources = local_photos
     else:
-        photo_sources = []
-        for url in payload.get("images", [])[:MAX_PHOTOS]:
-            if not safe_remote_url(url):
-                continue
-            try:
-                response = requests.get(url, timeout=12)
-                response.raise_for_status()
-                photo_sources.append(response.content)
-            except Exception:
-                continue
+        photo_sources = (url for url in payload.get("images", [])[:MAX_PHOTOS] if safe_remote_url(url))
     for source in photo_sources:
         try:
+            if isinstance(source, str) and source.startswith("https://"):
+                response = requests.get(source, timeout=12)
+                response.raise_for_status()
+                source = response.content
             append_pdf_image(source)
             added_photos += 1
             if added_photos == 1:
