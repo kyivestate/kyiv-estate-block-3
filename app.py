@@ -1551,6 +1551,8 @@ def make_pdf(payload):
                 local_photos = [local_root / item["filename"] for item in manifest.get("photos", []) if (local_root / item.get("filename", "")).is_file()][:MAX_PHOTOS]
             else:
                 local_photos = sorted(path for path in local_root.iterdir() if path.is_file())[:MAX_PHOTOS]
+    pdf_image_buffers = []
+
     def append_pdf_image(source):
         if isinstance(source, (bytes, bytearray)):
             # The browser flow fetches originals from OLX/Rieltor. Re-encode one
@@ -1560,15 +1562,20 @@ def make_pdf(payload):
                 image = ImageOps.exif_transpose(original).convert("RGB")
                 if max(image.size) > 1600:
                     ratio = 1600 / max(image.size)
-                    image = image.resize((round(image.width * ratio), round(image.height * ratio)), Image.Resampling.LANCZOS)
+                    image = image.resize((round(image.width * ratio), round(image.height * ratio)), PILImage.Resampling.LANCZOS)
                 encoded = BytesIO()
                 image.save(encoded, format="JPEG", quality=82, optimize=True)
             reader_source = image_source = BytesIO(encoded.getvalue())
+            # ReportLab reads the stream lazily during document.build(). Keep
+            # it alive until then instead of letting the local buffer be freed.
+            pdf_image_buffers.append(image_source)
         else:
             reader_source = image_source = str(source)
         reader = ImageReader(reader_source)
         width, height = reader.getSize()
         ratio = min(16 * cm / width, 11 * cm / height, 1)
+        if hasattr(image_source, "seek"):
+            image_source.seek(0)
         story.extend([Spacer(1, 0.25 * cm), Image(image_source, width=width * ratio, height=height * ratio)])
 
     added_photos = 0
@@ -1586,7 +1593,8 @@ def make_pdf(payload):
             added_photos += 1
             if added_photos == 1:
                 append_pdf_image(ensure_local_logo())
-        except Exception:
+        except Exception as error:
+            print(f"Skipping PDF photo: {type(error).__name__}: {error}", flush=True)
             continue
     pdf_contacts = []
     for label, url in agency_links():
