@@ -422,9 +422,9 @@ def extract_listing(source_url):
     # The title carries the listing category on Rieltor and is a more reliable
     # signal than descriptive copy (which can mention a house nearby, etc.).
     details = extract_details(detail_text, clean_title)
-    # Prefer the structured address embedded in the title.  It avoids the long
-    # navigation breadcrumbs found in the page body.
-    details["address"] = extract_address(detail_text, response.url, clean_title)
+    # Keep the original title here: its "- Оголошення №..." suffix marks the
+    # end of Rieltor's structured address.  The cleaned title no longer has it.
+    details["address"] = extract_address(detail_text, response.url, html.unescape(title).strip())
     prices = convert_prices(details.get("price"), details.get("currency"))
     clean_images = listing_photo_urls(clean_images, response.url)
     # Both sources can repeat the same photo under different CDN URLs.  Do the

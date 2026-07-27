@@ -155,6 +155,12 @@ class AppTests(unittest.TestCase):
         self.assertEqual(details["property_type"], "apartment")
         self.assertEqual(details["rooms"], "")
 
+    def test_cleaned_title_does_not_replace_rieltor_address_source(self):
+        raw_title = "Продаж квартир: Мечникова вул. (Кловський), 11-А, Печерський р-н, Київ - Оголошення №12519316"
+        cleaned_title = app.sanitize_title(raw_title)
+        self.assertEqual(cleaned_title, "Продаж квартир: Мечникова вул. (Кловський), 11-А, Печерський р-н, Київ")
+        self.assertEqual(app.extract_address("Київ Печерський р-н Продаж квартир", "https://rieltor.ua/flats-sale/view/12519316/", raw_title), "Мечникова вул. (Кловський), 11-А, Печерський р-н, Київ")
+
     def test_english_property_rows_use_translated_address(self):
         details = {"property_type": "apartment", "floor": "4", "total_floors": "12", "address": "Київ, вул. Мечникова, 11-А", "address_en": "Kyiv, Mechnykova Street, 11-A"}
         self.assertIn(("Address", "Kyiv, Mechnykova Street, 11-A"), app.property_detail_rows(details, "en"))
