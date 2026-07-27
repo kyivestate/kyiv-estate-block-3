@@ -456,7 +456,7 @@ def extract_details(page_text, classification_text=""):
     # Listings often show total/living/kitchen area as "72 / 20 / 30 m²".
     area = match(r"(\d[\d\s\u00a0]*(?:[.,]\d+)?)\s*/\s*\d+(?:[.,]\d+)?\s*/\s*\d+(?:[.,]\d+)?\s*(?:м²|м2|m²|m2)") or match(r"(\d[\d\s\u00a0]*(?:[.,]\d+)?)\s*(?:м²|м2|m²|m2)")
     floor = match(r"(?:поверх|пов\.)\s*(\d+)\s*(?:з|/)\s*(\d+)") or match(r"(\d+)\s*(?:поверх|пов\.)\s*(?:з|/)\s*(\d+)") or match(r"(\d+)\s*поверх\s*(\d+)\s*-?\s*пов") or match(r"(?:поверх|пов\.)\s*(\d+)")
-    storeys = match(r"\b(\d+)\s*[-–]?\s*(?:х|x)?\s*поверх\w*")
+    storeys = match(r"\b(\d+)\s*[-–]?\s*(?:х|x)?\s*поверх\w*") or match(r"(?:поверховість|поверхів|этажность|этажей)\s*[:№-]?\s*(\d+)")
     # Never accept an arbitrary long number as a room count: on some pages the
     # number next to the area was incorrectly captured as rooms.
     room_values = []
@@ -467,9 +467,10 @@ def extract_details(page_text, classification_text=""):
         room_values.extend(int(value) for value in re.findall(pattern, page_text, re.IGNORECASE) if 0 < int(value) <= 20)
     land = match(r"(?:ділян(?:ка|ки)|участ(?:ок|ка)|land)\s*[:№-]?\s*(\d+(?:[.,]\d+)?)\s*(сот(?:ок|ки)?|га|hectares?)")
     lowered = (classification_text or page_text).casefold()
-    property_type = "house" if re.search(r"\b(?:будинок|дом|котедж|house|townhouse|таунхаус)\b", lowered) else "commercial" if re.search(r"\b(?:комерц\w*|склад\w*|офіс\w*|магазин\w*|warehouse|office|retail)\b", lowered) else "apartment"
+    property_type = "house" if re.search(r"\b(?:будин\w*|дом\w*|котедж\w*|house\w*|townhouse|таунхаус\w*)\b", lowered) else "commercial" if re.search(r"\b(?:комерц\w*|склад\w*|офіс\w*|магазин\w*|warehouse|office|retail)\b", lowered) else "apartment"
     currency = {"$": "USD", "USD": "USD", "€": "EUR", "EUR": "EUR", "₴": "UAH", "грн": "UAH", "грн.": "UAH"}
-    return {"price": price[0].strip() if price else "", "currency": currency.get(price[1].upper(), "UAH") if price else "UAH", "area": area[0].strip() if area else "", "floor": floor[0] if floor else "", "total_floors": floor[1] if len(floor) > 1 else (storeys[0] if property_type == "house" and storeys else ""), "rooms": str(room_values[0]) if room_values else "", "land_area": " ".join(land) if land else "", "property_type": property_type}
+    house_storeys = storeys[0] if property_type == "house" and storeys else (floor[0] if property_type == "house" and len(floor) == 1 else "")
+    return {"price": price[0].strip() if price else "", "currency": currency.get(price[1].upper(), "UAH") if price else "UAH", "area": area[0].strip() if area else "", "floor": floor[0] if floor else "", "total_floors": floor[1] if len(floor) > 1 else house_storeys, "rooms": str(room_values[0]) if room_values else "", "land_area": " ".join(land) if land else "", "property_type": property_type}
 
 
 def extract_address(page_text, source_url, title=""):

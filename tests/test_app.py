@@ -147,6 +147,12 @@ class AppTests(unittest.TestCase):
         self.assertEqual(house["property_type"], "house")
         self.assertEqual(app.property_detail_rows(house, "uk"), [("Загальна площа", "500 м²"), ("Кількість кімнат", "7 кімнати"), ("Площа ділянки", "10 соток"), ("Поверховість", "3")])
 
+    def test_house_plural_title_and_storeys_field_are_rendered_as_one_value(self):
+        house = app.extract_details("Продаж будинків. Площа 500 м². Поверхів: 3", "Продаж будинків")
+        self.assertEqual(house["property_type"], "house")
+        self.assertEqual(house["total_floors"], "3")
+        self.assertEqual(app.property_detail_rows(house, "uk"), [("Загальна площа", "500 м²"), ("Поверховість", "3")])
+
     def test_rieltor_uses_clean_title_address_and_area_is_not_a_room_count(self):
         title = "Продаж квартир: Мечникова вул. (Кловський), 11-А, Печерський р-н, Київ - Оголошення №12519316"
         address = app.extract_address("Київ Печерський р-н Продаж квартир", "https://rieltor.ua/flats-sale/view/12519316/", title)
