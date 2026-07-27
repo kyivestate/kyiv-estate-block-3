@@ -500,7 +500,7 @@ def sanitize_title(value):
     value = strip_listing_references(value)
     value = re.sub(r"^\s*(?:advertisement|оголошення)\s*#?\s*\d*\s*[:|·—-]*\s*", "", value, flags=re.IGNORECASE)
     value = re.sub(r"(?:Ресурс|Resource)\s*\d+.*$", "", value, flags=re.IGNORECASE)
-    value = re.sub(r"\s*[-|·]\s*(?:RIELTOR\.UA|OLX(?:\.UA)?)\s*$", "", value, flags=re.IGNORECASE)
+    value = re.sub(r"\s*(?:[-|·]\s*)?(?:RIELTOR\.UA|OLX(?:\.UA)?)\s*$", "", value, flags=re.IGNORECASE)
     return re.sub(r"\s+", " ", value).strip(" \"'—-")
 
 
