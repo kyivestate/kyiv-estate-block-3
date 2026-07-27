@@ -421,19 +421,16 @@ def extract_listing(source_url):
     details["address"] = extract_address(detail_text, response.url)
     prices = convert_prices(details.get("price"), details.get("currency"))
     clean_images = listing_photo_urls(clean_images, response.url)
-    # OLX pages often expose many full-resolution CDN assets. Fetching them all
-    # only for preview can exhaust a small Railway worker; final package
-    # deduplication still runs later on the downloaded assets.
-    if "olx.ua" not in urlparse(response.url).hostname.lower():
-        clean_images = visually_unique_preview_urls(clean_images)
-    else:
-        clean_images = clean_image_urls(clean_images)
+    # Both sources can repeat the same photo under different CDN URLs.  Do the
+    # visual check before showing the editor so duplicates cannot be selected
+    # and published accidentally.
+    clean_images = visually_unique_preview_urls(clean_images)
     listing = {
         "internal_id": job_id,
         "title": clean_title,
         "description": clean_description,
         "original_description": original_description,
-        "ai_description": editorial_ai_text(original_description),
+        "ai_description": editorial_ai_text(original_description, clean_title),
         "images": clean_images,
         "source": response.url,
         "details": details,
@@ -451,10 +448,15 @@ def extract_details(page_text):
         return found.groups() if found else ()
     price = match(r"(?<!\d)(\d[\d\s\u00a0]*(?:[.,]\d+)?)\s*(USD|EUR|грн\.?|\$|€|₴)(?!\w)")
     # Listings often show total/living/kitchen area as "72 / 20 / 30 m²".
-    area = match(r"(\d+(?:[.,]\d+)?)\s*/\s*\d+(?:[.,]\d+)?\s*/\s*\d+(?:[.,]\d+)?\s*(?:м²|м2|m²|m2)") or match(r"(\d+(?:[.,]\d+)?)\s*(?:м²|м2|m²|m2)")
-    floor = match(r"(?:поверх|пов\.)\s*(\d+)\s*(?:з|/)\s*(\d+)") or match(r"(\d+)\s*(?:поверх|пов\.)\s*(?:з|/)\s*(\d+)") or match(r"(\d+)\s*поверх\s*(\d+)\s*-?\s*пов")
+    area = match(r"(\d[\d\s\u00a0]*(?:[.,]\d+)?)\s*/\s*\d+(?:[.,]\d+)?\s*/\s*\d+(?:[.,]\d+)?\s*(?:м²|м2|m²|m2)") or match(r"(\d[\d\s\u00a0]*(?:[.,]\d+)?)\s*(?:м²|м2|m²|m2)")
+    floor = match(r"(?:поверх|пов\.)\s*(\d+)\s*(?:з|/)\s*(\d+)") or match(r"(\d+)\s*(?:поверх|пов\.)\s*(?:з|/)\s*(\d+)") or match(r"(\d+)\s*поверх\s*(\d+)\s*-?\s*пов") or match(r"(?:поверх|пов\.)\s*(\d+)")
+    storeys = match(r"\b(\d+)\s*[-–]?\s*(?:х|x)?\s*поверх\w*")
+    rooms = match(r"(?:кімнат(?:и|а)?|комнат(?:ы|а)?|rooms?)\s*[:№-]?\s*(\d+)") or match(r"\b(\d+)\s*[-–]?\s*(?:кімнат\w*|комнат\w*|room)" )
+    land = match(r"(?:ділян(?:ка|ки)|участ(?:ок|ка)|land)\s*[:№-]?\s*(\d+(?:[.,]\d+)?)\s*(сот(?:ок|ки)?|га|hectares?)")
+    lowered = page_text.casefold()
+    property_type = "house" if re.search(r"\b(?:будинок|дом|котедж|house|townhouse|таунхаус)\b", lowered) else "commercial" if re.search(r"\b(?:комерц\w*|склад\w*|офіс\w*|магазин\w*|warehouse|office|retail)\b", lowered) else "apartment"
     currency = {"$": "USD", "USD": "USD", "€": "EUR", "EUR": "EUR", "₴": "UAH", "грн": "UAH", "грн.": "UAH"}
-    return {"price": price[0].strip() if price else "", "currency": currency.get(price[1].upper(), "UAH") if price else "UAH", "area": area[0] if area else "", "floor": "/".join(floor) if floor else ""}
+    return {"price": price[0].strip() if price else "", "currency": currency.get(price[1].upper(), "UAH") if price else "UAH", "area": area[0] if area else "", "floor": floor[0] if floor else "", "total_floors": floor[1] if len(floor) > 1 else (storeys[0] if property_type == "house" and storeys else ""), "rooms": rooms[0] if rooms else "", "land_area": " ".join(land) if land else "", "property_type": property_type}
 
 
 def extract_address(page_text, source_url):
@@ -472,6 +474,7 @@ def extract_address(page_text, source_url):
 
 
 def sanitize_title(value):
+    value = re.sub(r"^\s*(?:advertisement|оголошення)\s*#?\s*\d*\s*[:|·—-]*\s*", "", value, flags=re.IGNORECASE)
     value = re.sub(r"(?:Ресурс|Resource)\s*\d+.*$", "", value, flags=re.IGNORECASE)
     value = re.sub(r"\s*[-|·]\s*(?:RIELTOR\.UA|OLX(?:\.UA)?)\s*$", "", value, flags=re.IGNORECASE)
     return re.sub(r"\s+", " ", value).strip(" \"'—-")
@@ -503,9 +506,12 @@ def sanitize_public_text(value):
     return "\n\n".join(kept).strip()
 
 
-def editorial_ai_text(value):
-    """Produce a publication-ready fallback when no external LLM is configured."""
+def editorial_ai_text(value, title=""):
+    """Create a clean, publication-ready description without inventing facts."""
     clean = sanitize_public_text(value)
+    if title:
+        clean = re.sub(re.escape(sanitize_title(title)), "", clean, flags=re.IGNORECASE)
+        clean = re.sub(r"^[\s:—-]+", "", clean)
     sentences = [item.strip() for item in re.split(r"(?<=[.!?])\s+", clean.replace("\n", " ")) if item.strip()]
     paragraphs = []
     for start in range(0, len(sentences), 3):
@@ -635,7 +641,7 @@ def visual_fingerprint_bytes(content):
 def same_visual_photo(candidate, fingerprints):
     width, height, signature = visual_fingerprint(candidate)
     for other_width, other_height, other_signature in fingerprints:
-        if abs(width / max(height, 1) - other_width / max(other_height, 1)) < 0.012 and (signature ^ other_signature).bit_count() <= 8:
+        if abs(width / max(height, 1) - other_width / max(other_height, 1)) < 0.012 and (signature ^ other_signature).bit_count() <= 12:
             return True
     return False
 
@@ -668,6 +674,45 @@ def visually_unique_preview_urls(urls):
             fingerprints.append(signature)
         result.append(url)
     return result
+
+
+def display_price(details, prices):
+    """Show one source price; converted currencies remain available in the editor."""
+    value = str(details.get("price", "")).strip()
+    currency = str(details.get("currency", "")).upper()
+    if value and currency:
+        number = parse_number(value)
+        formatted = f"{number:,.0f}".replace(",", " ") if number is not None and number.is_integer() else value.replace("\u00a0", " ")
+        return f"{formatted} { {'USD': '$', 'EUR': '€', 'UAH': 'грн'}.get(currency, currency) }"
+    for code in ("USD", "EUR", "UAH"):
+        if prices.get(code):
+            return f"{prices[code]} { {'USD': '$', 'EUR': '€', 'UAH': 'грн'}[code] }"
+    return ""
+
+
+def property_detail_rows(details, language):
+    """Return only the fields that make sense for the listing type."""
+    uk = language == "uk"
+    labels = {
+        "price": "Ціна" if uk else "Price",
+        "area": "Загальна площа" if uk else "Total area",
+        "floor": "Поверх" if uk else "Floor",
+        "total_floors": "Поверховість" if uk else "Total floors",
+        "storeys": "Поверхів" if uk else "Storeys",
+        "rooms": "Кількість кімнат" if uk else "Rooms",
+        "land": "Площа ділянки" if uk else "Land area",
+    }
+    area = f"{str(details.get('area')).strip()} м²" if details.get("area") else ""
+    rooms = f"{details.get('rooms')} {'кімнати' if uk else 'rooms'}" if details.get("rooms") else ""
+    kind = details.get("property_type", "apartment")
+    rows = [(labels["area"], area)]
+    if kind == "house":
+        rows.extend([(labels["rooms"], rooms), (labels["land"], str(details.get("land_area", ""))), (labels["storeys"], str(details.get("total_floors", "")))])
+    elif kind == "commercial":
+        rows.append((labels["floor"], str(details.get("floor", ""))))
+    else:
+        rows.extend([(labels["floor"], str(details.get("floor", ""))), (labels["total_floors"], str(details.get("total_floors", ""))), (labels["rooms"], rooms)])
+    return [(label, value) for label, value in rows if value]
 
 
 def ensure_local_logo():
@@ -885,11 +930,7 @@ def telegraph_content(payload, language, text, images=None, logo_url=None):
     details = payload.get("details", {})
     prices = payload.get("prices", {})
     images = images if images is not None else [url for url in payload.get("images", []) if isinstance(url, str) and url.startswith("https://")][:MAX_PHOTOS]
-    labels = {
-        "uk": ("Ціна", "Площа", "Поверх", "Контакти"),
-        "en": ("Price", "Area", "Floor", "Contacts"),
-    }
-    price_label, area_label, floor_label, contacts_label = labels.get(language, labels["uk"])
+    price_label, contacts_label = ("Ціна", "Контакти") if language == "uk" else ("Price", "Contacts")
     content = []
     if images:
         content.append({"tag": "img", "attrs": {"src": images[0]}})
@@ -905,13 +946,10 @@ def telegraph_content(payload, language, text, images=None, logo_url=None):
             {"tag": "b", "children": ["Контакти: " if language == "uk" else "Contacts: "]},
             {"tag": "a", "attrs": {"href": phone_url}, "children": [CONTACT_PHONE]},
         ]})
-    price_parts = [f"{prices.get(code)} {code}" for code in ("UAH", "USD", "EUR") if prices.get(code)]
-    if price_parts:
-        content.append({"tag": "h3", "children": ["💰 " + price_label]})
-        content.append({"tag": "p", "children": [{"tag": "b", "children": [f"{price_label}: "]}, " · ".join(price_parts)]})
-    if details.get("area") or details.get("floor"):
-        content.append({"tag": "h3", "children": ["🏠 Характеристики" if language == "uk" else "🏠 Key details"]})
-    for label, value in ((area_label, f"{details.get('area')} m²" if details.get("area") else ""), (floor_label, details.get("floor", ""))):
+    price = display_price(details, prices)
+    if price:
+        content.append({"tag": "p", "children": [{"tag": "b", "children": [f"{price_label}: "]}, price]})
+    for label, value in property_detail_rows(details, language):
         if value:
             content.append({"tag": "p", "children": [{"tag": "b", "children": [f"{label}: "]}, str(value)]})
     public_text = sanitize_public_text(text)
@@ -1306,10 +1344,11 @@ def save_approved_photos(job_id, image_urls, payload=None):
 def render_package_page(language, record, photos):
     translations = record["translations"]
     version = translations[language]
-    labels = {"uk": ("Ціна", "Площа", "Поверх", "English", "Контакти"), "en": ("Price", "Area", "Floor", "Українська", "Contacts")}
-    price_label, area_label, floor_label, other_label, contacts_label = labels[language]
+    labels = {"uk": ("Ціна", "English", "Контакти"), "en": ("Price", "Українська", "Contacts")}
+    price_label, other_label, contacts_label = labels[language]
     other_file = "en.html" if language == "uk" else "uk.html"
-    prices = " · ".join(f"{html.escape(str(record['prices'].get(code)))} {code}" for code in ("UAH", "USD", "EUR") if record["prices"].get(code))
+    prices = html.escape(display_price(record["details"], record["prices"]))
+    detail_html = "".join(f'<p><b>{html.escape(label)}:</b> {html.escape(str(value))}</p>' for label, value in property_detail_rows(record["details"], language))
     image_tags = [f'<img src="photos/{html.escape(item["filename"])}" alt="KYIV ESTATE property photo {item["order"]}">' for item in photos]
     main_image = image_tags[0] if image_tags else ""
     remaining_images = "".join(image_tags[1:])
@@ -1320,7 +1359,7 @@ def render_package_page(language, record, photos):
         contact_parts.append(f'<a href="{html.escape(url, quote=True)}">{html.escape(display)}</a>')
     contacts = " · ".join(contact_parts)
     slogan = "🏛 Kyiv.Estate — Агентство нерухомості №1 в Києві." if language == "uk" else "🏛 Kyiv.Estate — Kyiv’s No. 1 Real Estate Agency."
-    return f'''<!doctype html><html lang="{language}"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{html.escape(version["title"])}</title><style>*{{box-sizing:border-box}}body{{max-width:760px;margin:0 auto;padding:42px 22px;color:#111;background:#fff;font-family:-apple-system,BlinkMacSystemFont,"SF Pro Display","SF Pro Text","Helvetica Neue",Arial,sans-serif;line-height:1.55}}h1{{font-size:34px;line-height:1.15}}nav{{margin:14px 0 28px}}a{{color:#111}}img{{display:block;width:100%;height:auto;margin:22px 0}}.logo{{max-width:220px;margin:22px auto}}.brand{{margin:22px 0;padding:24px;text-align:center;border:1px solid #ddd;font-weight:700;letter-spacing:.16em}}.facts{{border-top:1px solid #ddd;border-bottom:1px solid #ddd;padding:16px 0;margin:24px 0}}.facts p{{margin:6px 0}}.description{{white-space:pre-line}}footer{{margin-top:32px;padding-top:18px;border-top:1px solid #ddd}}</style><body><h1>{html.escape(record["internal_id"])} · {html.escape(version["title"])}</h1><nav><a href="{other_file}">{other_label}</a></nav>{main_image}{logo}<section class="facts"><p><b>{price_label}:</b> {prices}</p><p><b>{area_label}:</b> {html.escape(str(record["details"].get("area", "")))} m²</p><p><b>{floor_label}:</b> {html.escape(str(record["details"].get("floor", "")))}</p></section><div class="description">{html.escape(sanitize_public_text(version["text"]))}</div>{remaining_images}<footer><b>{contacts_label}:</b> {contacts}<p><b>{html.escape(slogan)}</b></p></footer></body></html>'''
+    return f'''<!doctype html><html lang="{language}"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>{html.escape(version["title"])}</title><style>*{{box-sizing:border-box}}body{{max-width:760px;margin:0 auto;padding:42px 22px;color:#111;background:#fff;font-family:-apple-system,BlinkMacSystemFont,"SF Pro Display","SF Pro Text","Helvetica Neue",Arial,sans-serif;line-height:1.55}}h1{{font-size:34px;line-height:1.15}}nav{{margin:14px 0 28px}}a{{color:#111}}img{{display:block;width:100%;height:auto;margin:22px 0}}.logo{{max-width:220px;margin:22px auto}}.brand{{margin:22px 0;padding:24px;text-align:center;border:1px solid #ddd;font-weight:700;letter-spacing:.16em}}.facts{{border-top:1px solid #ddd;border-bottom:1px solid #ddd;padding:16px 0;margin:24px 0}}.facts p{{margin:6px 0}}.description{{white-space:pre-line}}footer{{margin-top:32px;padding-top:18px;border-top:1px solid #ddd}}</style><body><h1>{html.escape(record["internal_id"])} · {html.escape(version["title"])}</h1><nav><a href="{other_file}">{other_label}</a></nav>{main_image}{logo}<section class="facts"><p><b>{price_label}:</b> {prices}</p>{detail_html}</section><div class="description">{html.escape(sanitize_public_text(version["text"]))}</div>{remaining_images}<footer><b>{contacts_label}:</b> {contacts}<p><b>{html.escape(slogan)}</b></p></footer></body></html>'''
 
 
 def repair_existing_packages_once():
@@ -1467,8 +1506,7 @@ def make_pdf(payload):
     if show_title and not title:
         raise ValueError("Потрібен заголовок для PDF.")
     language = payload.get("language", "uk")
-    labels = {"uk": ("Ціна", "Площа", "Поверх", "Контакти"), "en": ("Price", "Area", "Floor", "Contacts")}
-    price_label, area_label, floor_label, contacts_label = labels.get(language, labels["uk"])
+    price_label, contacts_label = ("Ціна", "Контакти") if language == "uk" else ("Price", "Contacts")
     font_candidates = [
         "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
         "C:/Windows/Fonts/arial.ttf",
@@ -1489,8 +1527,7 @@ def make_pdf(payload):
     story = [Paragraph(title, heading), Spacer(1, 0.3 * cm)] if title else []
     details = payload.get("details", {})
     prices = payload.get("prices", {})
-    price_text = " · ".join(f"{prices.get(code)} {code}" for code in ("UAH", "USD", "EUR") if prices.get(code))
-    rows = [(price_label, price_text), (area_label, f"{details.get('area', '')} m²".strip()), (floor_label, details.get("floor", ""))]
+    rows = [(price_label, display_price(details, prices)), *property_detail_rows(details, language)]
     rows = [[Paragraph(html.escape(label), normal), Paragraph(html.escape(value), normal)] for label, value in rows if value]
     if rows:
         table = Table(rows, colWidths=[4 * cm, 12 * cm])

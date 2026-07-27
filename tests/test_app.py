@@ -6,12 +6,29 @@ from io import BytesIO
 from pathlib import Path
 from unittest import mock
 
+from PIL import Image
+
 import app
+
+
+def test_image(marker=b""):
+    output = BytesIO()
+    image = Image.effect_noise((180, 120), 80).convert("RGB")
+    offset = sum(marker) % 120
+    for x in range(offset, min(offset + 25, image.width)):
+        for y in range(20, 60):
+            image.putpixel((x, y), (255, 0, 0))
+    image.save(output, format="JPEG", quality=90)
+    return output.getvalue()
+
+
+TEST_IMAGE = test_image()
+CERTIFIED_IMAGE = test_image(b"certified-final")
 
 
 class FakeResponse:
     def __init__(self, content=b"", payload=None, url="https://images.example/photo.jpg", content_type="image/jpeg", status_code=200):
-        self.content = content
+        self.content = content if content.startswith((b"\xff\xd8", b"\x89PNG")) else test_image(content)
         self._payload = payload
         self.url = url
         self.status_code = status_code
@@ -77,7 +94,7 @@ class AppTests(unittest.TestCase):
                 "uk": {"title": "Квартира", "text": "Світла квартира з ремонтом."},
                 "en": {"title": "Apartment", "text": "A bright renovated apartment."},
             },
-            "details": {"area": "97", "floor": "7/18"},
+            "details": {"price": "97000", "currency": "USD", "area": "97", "floor": "7", "total_floors": "18", "rooms": "3", "property_type": "apartment"},
             "prices": {"UAH": "4000000", "USD": "97000", "EUR": "89000"},
             "images": ["https://images.example/photo.jpg"],
         }
@@ -105,6 +122,35 @@ class AppTests(unittest.TestCase):
             app.sanitize_title("Apartment - RIELTOR.UAResource 1Resource 1"),
             "Apartment",
         )
+
+    def test_title_removes_advertisement_number_prefix(self):
+        self.assertEqual(app.sanitize_title("Advertisement # 4512: Apartment in Kyiv"), "Apartment in Kyiv")
+
+    def test_property_details_follow_apartment_commercial_and_house_templates(self):
+        apartment = app.extract_details("Продаж 2-кімнатної квартири. 450 000 $ 70.30 м² Поверх 1 з 5")
+        commercial = app.extract_details("Оренда теплого складу класу B+. 200 грн 1 000 м² Поверх 1")
+        house = app.extract_details("Сучасний 3-х поверховий будинок. 3 999 $ 500 м² 7 кімнат Ділянка 10 соток")
+        self.assertEqual(apartment["property_type"], "apartment")
+        self.assertEqual(app.property_detail_rows(apartment, "uk"), [("Загальна площа", "70.30 м²"), ("Поверх", "1"), ("Поверховість", "5"), ("Кількість кімнат", "2 кімнати")])
+        self.assertEqual(commercial["property_type"], "commercial")
+        self.assertEqual(app.property_detail_rows(commercial, "uk"), [("Загальна площа", "1 000 м²"), ("Поверх", "1")])
+        self.assertEqual(house["property_type"], "house")
+        self.assertEqual(app.property_detail_rows(house, "uk"), [("Загальна площа", "500 м²"), ("Кількість кімнат", "7 кімнати"), ("Площа ділянки", "10 соток"), ("Поверхів", "3")])
+
+    def test_telegraph_uses_clean_source_price_and_property_rows(self):
+        content = app.telegraph_content(self.payload(), "uk", "Чистий опис.")
+        text = json.dumps(content, ensure_ascii=False)
+        self.assertIn("Ціна: ", text); self.assertIn("97 000 $", text)
+        self.assertIn("Загальна площа: ", text); self.assertIn("97 м²", text)
+        self.assertIn("Поверх: ", text); self.assertIn("7", text)
+        self.assertIn("Поверховість: ", text); self.assertIn("18", text)
+        self.assertNotIn("💰", text)
+
+    def test_editor_keeps_both_description_versions_read_only_and_moves_language_switch(self):
+        interface = (app.ROOT / "index.html").read_text(encoding="utf-8")
+        self.assertIn('<textarea id="originalText" readonly>', interface)
+        self.assertIn('<textarea id="text" readonly>', interface)
+        self.assertGreater(interface.index('id="topUk"'), interface.index('id="extract"'))
 
     def test_initial_ai_request_does_not_look_like_all_photos_unchecked(self):
         interface = (app.ROOT / "index.html").read_text(encoding="utf-8")
@@ -192,7 +238,7 @@ class AppTests(unittest.TestCase):
         post.return_value = FakeResponse(payload=[{"src": "/file/stable.jpg"}])
         image = app.DATA_ROOT / "final.jpg"
         image.parent.mkdir(parents=True, exist_ok=True)
-        image.write_bytes(b"stable" * 1024)
+        image.write_bytes(TEST_IMAGE)
         first = app.telegraph_image(image)
         second = app.telegraph_image(image)
         self.assertEqual(first, "https://telegra.ph/file/stable.jpg")
@@ -253,17 +299,17 @@ class AppTests(unittest.TestCase):
         source_root = Path(self.temp.name) / "block2-listings"
         preserved = source_root / "olx" / "203781" / "original"
         preserved.mkdir(parents=True)
-        (preserved / "01.jpg").write_bytes(b"preserved-original")
+        (preserved / "01.jpg").write_bytes(TEST_IMAGE)
         clean = Path(self.temp.name) / "certified" / "01.jpg"
         clean.parent.mkdir(parents=True)
-        clean.write_bytes(b"certified-final")
+        clean.write_bytes(CERTIFIED_IMAGE)
         app.SOURCE_LISTINGS_ROOT = source_root
         app.AI_ENDPOINT = "http://127.0.0.1:8793"
         ai_photos.return_value = [clean]
         result = app.save_approved_photos("203781", self.payload()["images"], self.payload())
         original = Path(result[0]["original_path"])
-        self.assertEqual(original.read_bytes(), b"preserved-original")
-        self.assertEqual(Path(result[0]["final_path"]).read_bytes(), b"certified-final")
+        self.assertEqual(original.read_bytes(), TEST_IMAGE)
+        self.assertEqual(Path(result[0]["final_path"]).read_bytes(), CERTIFIED_IMAGE)
 
     @mock.patch.object(app.time, "sleep")
     @mock.patch.object(app.requests, "get")
