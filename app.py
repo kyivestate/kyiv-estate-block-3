@@ -465,12 +465,16 @@ def extract_details(page_text, classification_text=""):
         r"\b(\d{1,2})\s*[-–]?\s*(?:кімнат\w*|комнат\w*|rooms?)\b",
     ):
         room_values.extend(int(value) for value in re.findall(pattern, page_text, re.IGNORECASE) if 0 < int(value) <= 20)
-    land = match(r"(?:ділян(?:ка|ки)|участ(?:ок|ка)|land)\s*[:№-]?\s*(\d+(?:[.,]\d+)?)\s*(сот(?:ок|ки)?|га|hectares?)")
+    land = match(r"(?:(?:площа\s+)?(?:земельн\w*\s+)?(?:ділян\w*|участ\w*|land\s+(?:area|plot)?))\s*[:№-]?\s*(\d+(?:[.,]\d+)?)\s*(сот(?:\.?|ок|ки)?|га|гектар\w*|hectares?)")
     lowered = (classification_text or page_text).casefold()
     property_type = "house" if re.search(r"\b(?:будин\w*|дом\w*|котедж\w*|house\w*|townhouse|таунхаус\w*)\b", lowered) else "commercial" if re.search(r"\b(?:комерц\w*|склад\w*|офіс\w*|магазин\w*|warehouse|office|retail)\b", lowered) else "apartment"
     currency = {"$": "USD", "USD": "USD", "€": "EUR", "EUR": "EUR", "₴": "UAH", "грн": "UAH", "грн.": "UAH"}
     house_storeys = storeys[0] if property_type == "house" and storeys else (floor[0] if property_type == "house" and len(floor) == 1 else "")
-    return {"price": price[0].strip() if price else "", "currency": currency.get(price[1].upper(), "UAH") if price else "UAH", "area": area[0].strip() if area else "", "floor": floor[0] if floor else "", "total_floors": floor[1] if len(floor) > 1 else house_storeys, "rooms": str(room_values[0]) if room_values else "", "land_area": " ".join(land) if land else "", "property_type": property_type}
+    land_area = ""
+    if land:
+        land_unit = "соток" if land[1].casefold().startswith("сот") else "га" if land[1].casefold().startswith(("га", "гект")) else land[1]
+        land_area = f"{land[0]} {land_unit}"
+    return {"price": price[0].strip() if price else "", "currency": currency.get(price[1].upper(), "UAH") if price else "UAH", "area": area[0].strip() if area else "", "floor": floor[0] if floor else "", "total_floors": floor[1] if len(floor) > 1 else house_storeys, "rooms": str(room_values[0]) if room_values else "", "land_area": land_area, "property_type": property_type}
 
 
 def extract_address(page_text, source_url, title=""):
