@@ -1681,7 +1681,7 @@ def app(environ, start_response):
             return reply(start_response, "200 OK", {
                 "ok": True,
                 "service": "KYIV ESTATE",
-                "version": "1.1.0-dedupe",
+                "version": "1.2.0-production",
                 "revision": os.environ.get("RAILWAY_GIT_COMMIT_SHA", "ca725db")[:7],
             })
         if path == "/" and method == "GET":
