@@ -675,6 +675,10 @@ def visual_fingerprint(path):
 
 def visual_fingerprint_bytes(content):
     with Image.open(BytesIO(content)) as source:
+        # Fingerprinting never needs the full image.  Calling convert() on an
+        # original 5–8K OLX JPEG can allocate hundreds of MB and make a small
+        # Railway worker disappear with a 502.  Decode a bounded preview first.
+        source.thumbnail((512, 512), Image.Resampling.LANCZOS)
         image = ImageOps.exif_transpose(source).convert("L")
         width, height = image.size
         pixels = list(image.resize((17, 16), Image.Resampling.LANCZOS).getdata())
@@ -700,18 +704,28 @@ def visually_unique_preview_urls(urls):
     def fetch(index_url):
         index, url = index_url
         try:
-            response = requests.get(url, headers=REQUEST_HEADERS, timeout=12)
-            response.raise_for_status()
-            if not response.headers.get("Content-Type", "").lower().startswith("image/"):
-                return index, url, None
-            return index, url, visual_fingerprint_bytes(response.content)
+            with requests.get(url, headers=REQUEST_HEADERS, timeout=12, stream=True) as response:
+                response.raise_for_status()
+                if not response.headers.get("Content-Type", "").lower().startswith("image/"):
+                    return index, url, None
+                declared_size = int(response.headers.get("Content-Length") or 0)
+                # URL/token de-duplication still applies to bigger originals;
+                # skip only the optional pixel comparison above this safe cap.
+                if declared_size > 10 * 1024 * 1024:
+                    return index, url, None
+                content = bytearray()
+                for chunk in response.iter_content(256 * 1024):
+                    content.extend(chunk)
+                    if len(content) > 10 * 1024 * 1024:
+                        return index, url, None
+                return index, url, visual_fingerprint_bytes(bytes(content))
         except (requests.RequestException, OSError, ValueError):
             return index, url, None
     fetched = {}
     # Railway has a small memory envelope.  A few full-resolution OLX images
     # can be several megabytes each, so bounded concurrency avoids an upstream
     # 502 while retaining visual de-duplication for every source.
-    with ThreadPoolExecutor(max_workers=3) as pool:
+    with ThreadPoolExecutor(max_workers=1) as pool:
         for future in as_completed([pool.submit(fetch, item) for item in enumerate(urls)]):
             index, url, signature = future.result()
             fetched[index] = (url, signature)
