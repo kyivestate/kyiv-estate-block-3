@@ -1123,6 +1123,60 @@ def publish_bilingual(payload):
     return urls
 
 
+def publish_single_language(payload, language):
+    """Publish one language without creating the other page or its PDF."""
+    if language not in {"uk", "en"}:
+        raise ValueError("Unsupported publication language.")
+    translations = payload.get("translations", {})
+    version = translations.get(language, {})
+    if not version.get("title") or not version.get("text"):
+        raise ValueError("The requested language version is not ready.")
+    job_id = str(payload.get("internal_id") or listing_id(str(payload.get("source", ""))))
+    update_job(job_id, str(payload.get("source", "")), "publishing", 90)
+    package = create_package(payload)
+    package_root = PACKAGES_ROOT / package["internal_id"]
+    manifest_path = package_root / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    local_images = [package_root / "photos" / item["filename"] for item in manifest["photos"]]
+    if not local_images:
+        raise ValueError("No verified photographs are available for Telegraph.")
+    package_logo = package_root / "assets" / "kyiv-estate-logo.jpg"
+    try:
+        media_urls = durable_image_urls([*local_images, package_logo], job_id)
+        image_urls, logo_url = media_urls[:-1], media_urls[-1]
+    except (RuntimeError, requests.RequestException, ValueError) as media_error:
+        source_images = [str(item.get("source_url", "")) for item in manifest.get("photos", [])]
+        if len(source_images) != len(local_images) or not all(url.startswith("https://") for url in source_images):
+            raise RuntimeError(f"Telegraph media upload failed and no source fallback is available: {media_error}") from media_error
+        image_urls = source_images
+        logo_url = LOGO_URL if LOGO_URL.startswith("https://") else BUILTIN_LOGO_URL
+    show_title = bool(payload.get("include_title"))
+    title = f"{job_id} · {version['title']}" if show_title else job_id
+    content = telegraph_content(payload, language, str(version["text"]), image_urls, logo_url)
+    previous = manifest.get("telegraph", {})
+    previous_url = str(previous.get(language, ""))
+    if previous_url.startswith("https://telegra.ph/"):
+        page_url = edit_page(previous_url, title, content)
+    else:
+        page_url = publish_page(title, content)
+    urls = {"uk": str(previous.get("uk", "")), "en": str(previous.get("en", ""))}
+    urls[language] = page_url
+    # Update reciprocal language links only once the separately-published pair exists.
+    if all(urls[item].startswith("https://telegra.ph/") for item in ("uk", "en")):
+        for item, label, other in (("uk", "🌐 English", "en"), ("en", "🌐 Українська", "uk")):
+            item_version = translations.get(item, {})
+            item_title = f"{job_id} · {item_version['title']}" if show_title else job_id
+            item_content = telegraph_content(payload, item, str(item_version["text"]), image_urls, logo_url)
+            item_content.insert(0, {"tag": "p", "children": [{"tag": "a", "attrs": {"href": urls[other]}, "children": [label]}]})
+            edit_page(urls[item], item_title, item_content)
+    manifest["telegraph"] = {**previous, "uk": urls["uk"], "en": urls["en"], "logo_url": logo_url,
+                             "image_urls": image_urls, "published_at": datetime.now(timezone.utc).isoformat()}
+    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+    update_job(job_id, str(payload.get("source", "")), "published", 100,
+               uk_url=urls["uk"] or None, en_url=urls["en"] or None)
+    return {"language": language, "url": page_url, "urls": urls}
+
+
 def ai_package_photos(payload):
     """Ask the existing Windows AI lane to process one listing and return certified files."""
     if not AI_ENDPOINT:
@@ -1737,7 +1791,8 @@ def app(environ, start_response):
                 return pdf_reply(start_response, make_pdf(payload))
             if path.endswith("package"):
                 return reply(start_response, "200 OK", create_package(payload))
-            return reply(start_response, "200 OK", {"urls": publish_bilingual(payload)})
+            language = str(payload.get("language", "uk"))
+            return reply(start_response, "200 OK", publish_single_language(payload, language))
         return reply(start_response, "404 Not Found", {"error": "Не знайдено"})
     except (ValueError, requests.RequestException, RuntimeError) as error:
         return reply(start_response, "400 Bad Request", {"error": str(error)})
