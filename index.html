@@ -78,7 +78,7 @@ async function publishLanguage(language){
     message('publishStatus',`Publishing ${language==='uk'?'Ukrainian':'English'} Telegraph…`);
     const result=await postJson('/api/publish',data);
     const label=language==='uk'?'Ukrainian Telegraph':'English Telegraph';
-    $(`${button.id}Result`).innerHTML=`<span class="result">${label}: <a target="_blank" rel="noopener" href="${result.url}">Open</a></span>`;
+    message('publishStatus','');$(`${button.id}Result`).innerHTML=`<span class="result">${label}: <a target="_blank" rel="noopener" href="${result.url}">Open</a></span>`;
   }catch(error){$(`${button.id}Result`).textContent=error.message;$(`${button.id}Result`).className='action-result error'}finally{button.disabled=false}
 }
 async function downloadLanguagePdf(language){
@@ -91,7 +91,7 @@ async function downloadLanguagePdf(language){
     const blob=await postPdf(data),url=URL.createObjectURL(blob),link=document.createElement('a');
     link.href=url;link.download=`${listing.internal_id||'listing'}-${language}.pdf`;
     document.body.appendChild(link);link.click();link.remove();setTimeout(()=>URL.revokeObjectURL(url),30000);
-    $(`${button.id}Result`).innerHTML=`<span class="result">${language==='uk'?'Ukrainian':'English'} PDF downloaded.</span>`;
+    message('publishStatus','');$(`${button.id}Result`).innerHTML=`<span class="result">${language==='uk'?'Ukrainian':'English'} PDF downloaded.</span>`;
   }catch(error){$(`${button.id}Result`).textContent=error.message;$(`${button.id}Result`).className='action-result error'}finally{button.disabled=false}
 }
 $('publishUk').onclick=()=>publishLanguage('uk');
