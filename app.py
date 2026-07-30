@@ -484,6 +484,39 @@ def extract_details(page_text, classification_text=""):
 
 
 def extract_address(page_text, source_url, title=""):
+    # Prefer an explicitly published street and building number for every
+    # source.  Never infer a number from unrelated text.
+    combined = "\n".join((str(title or ""), str(page_text or "")))
+    exact = re.search(
+        r"(?<!\w)(?:(?:вул(?:иця)?|ул(?:ица)?|просп(?:ект)?|пр-т|пров(?:улок)?|пер(?:еулок)?|наб(?:ережна)?|бульвар|узвіз)\.?\s+[^,;\n]{1,70}?(?:,\s*)?(?:будинок|буд\.|д\.)?\s*\d{1,4}[а-яіїєґa-z0-9/-]*)",
+        combined,
+        re.IGNORECASE,
+    )
+    if exact and "rieltor.ua" not in source_url.lower():
+        return re.sub(r"\s+", " ", exact.group(0)).strip(" ,·-")
+    if "olx.ua" in source_url.lower():
+        # OLX sometimes exposes only a district, and sometimes a structured
+        # street/house pair.  Use what is actually present in its page state.
+        location = re.search(r'\\"location\\":\{([^{}]{0,3000})\}', combined)
+        if location:
+            values = {}
+            for key in ("cityName", "districtName", "streetName", "street", "houseNumber", "buildingNumber"):
+                match = re.search(r'\\"' + key + r'\\":\\"([^\\"]*)\\"', location.group(1))
+                if match:
+                    try:
+                        values[key] = json.loads('"' + match.group(1) + '"')
+                    except json.JSONDecodeError:
+                        values[key] = match.group(1)
+            street = values.get("streetName") or values.get("street")
+            number = values.get("houseNumber") or values.get("buildingNumber")
+            city = values.get("cityName")
+            district = values.get("districtName")
+            if street and number:
+                return ", ".join(item for item in (city, f"{street}, {number}") if item)
+            if city and district:
+                return f"{city}, {district}"
+            if city:
+                return city
     if "rieltor.ua" not in source_url.lower():
         return ""
     # Rieltor uses: "Продаж квартир: <full address> - Оголошення №...".
@@ -704,7 +737,11 @@ def visually_unique_preview_urls(urls):
     def fetch(index_url):
         index, url = index_url
         try:
-            with requests.get(url, headers=REQUEST_HEADERS, timeout=12, stream=True) as response:
+            # OLX serves resized gallery derivatives from the same immutable
+            # asset token.  A 512px derivative has the same visual fingerprint
+            # but arrives in milliseconds rather than as a 5–8K original.
+            preview_url = re.sub(r";s=\d+x\d+", ";s=512x512", url, flags=re.IGNORECASE)
+            with requests.get(preview_url, headers=REQUEST_HEADERS, timeout=8, stream=True) as response:
                 response.raise_for_status()
                 if not response.headers.get("Content-Type", "").lower().startswith("image/"):
                     return index, url, None
@@ -725,7 +762,7 @@ def visually_unique_preview_urls(urls):
     # Railway has a small memory envelope.  A few full-resolution OLX images
     # can be several megabytes each, so bounded concurrency avoids an upstream
     # 502 while retaining visual de-duplication for every source.
-    with ThreadPoolExecutor(max_workers=1) as pool:
+    with ThreadPoolExecutor(max_workers=4) as pool:
         for future in as_completed([pool.submit(fetch, item) for item in enumerate(urls)]):
             index, url, signature = future.result()
             fetched[index] = (url, signature)
