@@ -16,7 +16,7 @@ html,body,button,input,textarea{font-family:Arial,"Helvetica Neue",sans-serif!im
   <div class="create-row"><button class="primary" id="extract" type="button">Create</button><button class="action" id="retry" type="button" hidden>Retry</button></div><div class="language-switch" aria-label="Language"><button id="topUk" class="active" type="button">Ukrainian</button><button id="topEn" type="button">English</button></div>
 </section>
 <section class="panel" id="editor" hidden>
-  <div class="actions"><button class="action" id="publish" type="button">Publish Telegraph (UA + EN)</button><button class="action" id="downloadPdf" type="button">Download PDFs (UA + EN)</button><button class="action" id="createAnother" type="button">Create another</button></div>
+  <div class="actions"><button class="action" id="publishUk" type="button">Publish Telegraph · Ukrainian</button><button class="action" id="publishEn" type="button">Publish Telegraph · English</button><button class="action" id="downloadPdfUk" type="button">Download PDF · Ukrainian</button><button class="action" id="downloadPdfEn" type="button">Download PDF · English</button><button class="action" id="createAnother" type="button">Create another</button></div><button id="publish" type="button" class="hidden" tabindex="-1"></button><button id="downloadPdf" type="button" class="hidden" tabindex="-1"></button>
   <label><input id="includeTitle" type="checkbox"> Show title</label><div id="titleWrap" class="hidden"><label for="title">Title</label><input id="title"></div>
   <section class="facts"><h2>💰 Price</h2><div class="grid"><div><label for="uah">UAH</label><input id="uah" inputmode="decimal"></div><div><label for="usd">USD</label><input id="usd" inputmode="decimal"></div><div><label for="eur">EUR</label><input id="eur" inputmode="decimal"></div></div><p class="hint" id="rateInfo"></p><h2>🏠 Property details</h2><div class="grid two"><div><label for="area">Total area (m²)</label><input id="area" inputmode="decimal"></div><div id="floorRow"><label id="floorLabel" for="floor">Floor / total floors</label><input id="floor"></div><div id="totalFloorsRow"><label id="totalFloorsLabel" for="totalFloors">Total floors</label><input id="totalFloors" inputmode="numeric"></div><div id="roomsRow"><label for="rooms">Rooms</label><input id="rooms" inputmode="numeric"></div><div id="landAreaRow"><label for="landArea">Land area</label><input id="landArea"></div></div><label for="address">Address</label><input id="address" placeholder="Kyiv, street and building number"></section>
   <h2 class="section-title">📝 Description</h2><label>Text for Telegraph and PDF</label><div class="mode-switch"><button id="originalMode" class="active" type="button">Original text</button><button id="aiTextMode" type="button">AI text</button></div><select id="textMode" class="hidden"><option value="original" selected>Original text</option><option value="ai">AI text</option></select><div class="compare"><section class="text-card main" id="originalCard"><label for="originalText">Original text · Main</label><textarea id="originalText"></textarea></section><section class="text-card" id="aiCard"><label for="text">AI text · Publication-ready</label><textarea id="text"></textarea></section></div>
@@ -55,4 +55,45 @@ $('extract').onclick=extract;$('retry').onclick=extract;$('topUk').onclick=()=>s
 $('publish').onclick=async()=>{const button=$('publish');button.disabled=true;try{await ensureEnglish();message('publishStatus',words[lang].publishing);const r=await fetch('/api/publish',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload())}),d=await r.json();if(!r.ok)throw Error(d.error);$('publishStatus').innerHTML=`<span class="result">${words[lang].published}<a target="_blank" rel="noopener" href="${d.urls.uk}">UA</a> · <a target="_blank" rel="noopener" href="${d.urls.en}">EN</a></span>`}catch(e){message('publishStatus',e.message,true)}finally{button.disabled=false}};
 $('downloadPdf').onclick=async()=>{const button=$('downloadPdf');button.disabled=true;message('publishStatus',words[lang].pdf);try{await ensureEnglish();if(processingMode==='ai')await createPackage();const base=payload();for(const language of ['uk','en']){message('publishStatus',`Creating ${language.toUpperCase()} PDF…`);const version={...base,language,title:base.translations[language].title,text:base.translations[language].text},blob=await postPdf(version),url=URL.createObjectURL(blob),link=document.createElement('a');link.href=url;link.download=`${listing.internal_id||'listing'}-${language}.pdf`;document.body.appendChild(link);link.click();link.remove();setTimeout(()=>URL.revokeObjectURL(url),30000)}message('publishStatus','UA and EN PDFs downloaded.')}catch(e){message('publishStatus',e.message,true)}finally{button.disabled=false}};
 function chooseText(mode){$('textMode').value=mode;$('originalMode').classList.toggle('active',mode==='original');$('aiTextMode').classList.toggle('active',mode==='ai');$('originalCard').classList.toggle('main',mode==='original');$('aiCard').classList.toggle('main',mode==='ai')}$('originalMode').onclick=()=>chooseText('original');$('aiTextMode').onclick=()=>chooseText('ai');$('includeTitle').onchange=()=>{$('titleWrap').classList.toggle('hidden',!$('includeTitle').checked)};new MutationObserver(()=>{if(listing.details?.address)$('address').value=listing.details.address}).observe($('editor'),{attributes:true});$('createAnother').onclick=()=>{listing={};translations={uk:{title:'',text:''},en:{title:'',text:''}};originalTranslations={uk:'',en:''};packageUrls=null;mediaPairs=[];browserItems=[];$('listing').value='';$('editor').hidden=true;setProgress(0);message('status','');$('listing').focus()};renderLanguage();
+</script><script>
+// Separate publication actions: one click produces exactly one language file/page.
+async function languagePayload(language){
+  storeCurrent();
+  if(language==='en') await ensureEnglish();
+  const base=payload();
+  const mode=$('textMode').value;
+  const version=base.translations[language];
+  base.language=language;
+  base.title=version.title;
+  base.text=mode==='original'?originalTranslations[language]:version.text;
+  return base;
+}
+async function publishLanguage(language){
+  const button=$(language==='uk'?'publishUk':'publishEn');
+  button.disabled=true;
+  try{
+    const data=await languagePayload(language);
+    message('publishStatus',`Publishing ${language==='uk'?'Ukrainian':'English'} Telegraph…`);
+    const result=await postJson('/api/publish',data);
+    const label=language==='uk'?'Ukrainian Telegraph':'English Telegraph';
+    $('publishStatus').innerHTML=`<span class="result">${label}: <a target="_blank" rel="noopener" href="${result.url}">Open</a></span>`;
+  }catch(error){message('publishStatus',error.message,true)}finally{button.disabled=false}
+}
+async function downloadLanguagePdf(language){
+  const button=$(language==='uk'?'downloadPdfUk':'downloadPdfEn');
+  button.disabled=true;
+  try{
+    if(processingMode==='ai') await createPackage();
+    const data=await languagePayload(language);
+    message('publishStatus',`Creating ${language==='uk'?'Ukrainian':'English'} PDF…`);
+    const blob=await postPdf(data),url=URL.createObjectURL(blob),link=document.createElement('a');
+    link.href=url;link.download=`${listing.internal_id||'listing'}-${language}.pdf`;
+    document.body.appendChild(link);link.click();link.remove();setTimeout(()=>URL.revokeObjectURL(url),30000);
+    message('publishStatus',`${language==='uk'?'Ukrainian':'English'} PDF downloaded.`);
+  }catch(error){message('publishStatus',error.message,true)}finally{button.disabled=false}
+}
+$('publishUk').onclick=()=>publishLanguage('uk');
+$('publishEn').onclick=()=>publishLanguage('en');
+$('downloadPdfUk').onclick=()=>downloadLanguagePdf('uk');
+$('downloadPdfEn').onclick=()=>downloadLanguagePdf('en');
 </script></body></html>
