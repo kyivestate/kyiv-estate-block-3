@@ -1715,7 +1715,7 @@ def sync_sheet_record(payload, event, pdf_language=""):
         "rooms": details.get("rooms", ""), "district": details.get("district", ""), "city": details.get("city", ""),
         "street": details.get("address", ""), "residential_complex": details.get("residential_complex", ""),
         "metro_station": details.get("metro_station", ""), "url": payload.get("source", ""),
-        "photo_url": (payload.get("images") or [""])[0], "photos": json.dumps(payload.get("images", []), ensure_ascii=False),
+        "photo_url": (payload.get("images") or [""])[0],
         "agent_type": details.get("agent_type", ""), "agent_name": details.get("agent_name", ""), "agent_phone": details.get("agent_phone", ""),
         "advertiser_type": details.get("agent_type", ""), "contact_name": details.get("agent_name", ""), "phones": details.get("agent_phone", ""),
         "telegraph_url": telegraph.get("uk", ""), "telegraph_url_en": telegraph.get("en", ""),
