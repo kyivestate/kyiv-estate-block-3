@@ -430,6 +430,7 @@ def extract_listing(source_url):
     # The title carries the listing category on Rieltor and is a more reliable
     # signal than descriptive copy (which can mention a house nearby, etc.).
     details = extract_details(detail_text, clean_title)
+    details.update(extract_contact_details(page_plain))
     # Keep the original title here: its "- Оголошення №..." suffix marks the
     # end of Rieltor's structured address.  The cleaned title no longer has it.
     details["address"] = extract_address(detail_text, response.url, html.unescape(title).strip())
@@ -454,6 +455,28 @@ def extract_listing(source_url):
     LISTING_CACHE[cache_key] = (time.time(), listing)
     update_job(job_id, source_url, "ready", 100, snapshot=listing)
     return listing
+
+
+def extract_contact_details(page_text):
+    """Extract public advertiser details for the internal sheet only."""
+    text_value = html.unescape(page_text or "")
+    lower = text_value.lower()
+    if re.search(r"\b(?:ріелтор\w*|риелтор\w*|realtor\w*|агент\w*|broker\w*)\b", lower):
+        agent_type = "realtor"
+    elif re.search(r"\b(?:власник\w*|владелец\w*|owner\w*)\b", lower):
+        agent_type = "owner"
+    else:
+        agent_type = ""
+    phone_match = re.search(r"(?<!\d)(?:\+?38)?[\s\-()]*0\d{2}[\s\-()]*\d{3}[\s\-()]*\d{2}[\s\-()]*\d{2}(?!\d)", text_value)
+    phone = re.sub(r"\s+", " ", phone_match.group(0)).strip() if phone_match else ""
+    name = ""
+    role_pattern = r"(?:ріелтор\w*|риелтор\w*|realtor\w*|агент\w*|broker\w*)\s*[:\-–]?\s*([A-ZА-ЯІЇЄ][A-Za-zА-Яа-яІіЇїЄє'’\-]+(?:\s+[A-ZА-ЯІЇЄ][A-Za-zА-Яа-яІіЇїЄє'’\-]+){0,2})"
+    name_match = re.search(role_pattern, text_value)
+    if name_match:
+        candidate = name_match.group(1).strip()
+        if not re.search(r"\b(?:тел|phone|зателефону|contact)\b", candidate, re.IGNORECASE):
+            name = candidate
+    return {"agent_type": agent_type, "agent_name": name, "agent_phone": phone}
 
 
 def extract_details(page_text, classification_text=""):
@@ -1693,6 +1716,8 @@ def sync_sheet_record(payload, event, pdf_language=""):
         "street": details.get("address", ""), "residential_complex": details.get("residential_complex", ""),
         "metro_station": details.get("metro_station", ""), "url": payload.get("source", ""),
         "photo_url": (payload.get("images") or [""])[0], "photos": json.dumps(payload.get("images", []), ensure_ascii=False),
+        "agent_type": details.get("agent_type", ""), "agent_name": details.get("agent_name", ""), "agent_phone": details.get("agent_phone", ""),
+        "advertiser_type": details.get("agent_type", ""), "contact_name": details.get("agent_name", ""), "phones": details.get("agent_phone", ""),
         "telegraph_url": telegraph.get("uk", ""), "telegraph_url_en": telegraph.get("en", ""),
         "pdf_url": f"{PUBLIC_BASE_URL}/packages/{job_id}/pdf/uk.pdf" if (pdf_root / "uk.pdf").is_file() and PUBLIC_BASE_URL else "",
         "pdf_url_en": f"{PUBLIC_BASE_URL}/packages/{job_id}/pdf/en.pdf" if (pdf_root / "en.pdf").is_file() and PUBLIC_BASE_URL else "",
