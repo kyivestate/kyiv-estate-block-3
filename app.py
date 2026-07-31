@@ -73,6 +73,9 @@ SOURCE_LISTINGS_ROOT = Path(os.environ.get("KYIV_ESTATE_SOURCE_LISTINGS_ROOT", "
 AI_REQUIRED = os.environ.get("KYIV_ESTATE_AI_REQUIRED", "false").lower() == "true"
 AI_TIMEOUT_SECONDS = max(60, int(os.environ.get("KYIV_ESTATE_AI_TIMEOUT_SECONDS", "1800")))
 MAX_PHOTOS = max(1, min(100, int(os.environ.get("KYIV_ESTATE_MAX_PHOTOS", "100"))))
+SHEETS_WEBHOOK_URL = os.environ.get("KYIV_ESTATE_SHEETS_WEBHOOK_URL", "").strip()
+SHEETS_WEBHOOK_SECRET = os.environ.get("KYIV_ESTATE_SHEETS_WEBHOOK_SECRET", "").strip()
+SHEETS_OUTBOX_ROOT = DATA_ROOT / "sheets_outbox"
 REQUEST_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36",
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
@@ -1225,6 +1228,7 @@ def publish_single_language(payload, language):
     manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
     update_job(job_id, str(payload.get("source", "")), "published", 100,
                uk_url=urls["uk"] or None, en_url=urls["en"] or None)
+    sync_sheet_record(payload, "telegraph")
     return {"language": language, "url": page_url, "urls": urls}
 
 
@@ -1651,6 +1655,66 @@ def create_package(payload):
     }
 
 
+def sheet_tab_for(payload):
+    details = payload.get("details", {})
+    property_type = str(details.get("property_type") or "apartment").lower()
+    text = " ".join(str(payload.get(key, "")) for key in ("source", "title", "text")).lower()
+    operation = "rent" if any(marker in text for marker in ("rent", "оренд", "здає", "arenda")) else "sale"
+    prefix = "commercial_listings" if property_type == "commercial" else "houses_listings" if property_type == "house" else "active_listings"
+    return f"{prefix}_{operation}", operation
+
+
+def sync_sheet_record(payload, event, pdf_language=""):
+    """Persist every publish/PDF result to an idempotent local outbox and optional Sheets webhook."""
+    job_id = re.sub(r"[^a-zA-Z0-9_-]", "", str(payload.get("internal_id", "")))
+    if not job_id:
+        return
+    package_root = PACKAGES_ROOT / job_id
+    manifest_path = package_root / "manifest.json"
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8")) if manifest_path.is_file() else {}
+    except (OSError, json.JSONDecodeError):
+        manifest = {}
+    tab, operation = sheet_tab_for(payload)
+    details, prices = payload.get("details", {}), payload.get("prices", {})
+    translations = payload.get("translations", {})
+    telegraph = manifest.get("telegraph", {})
+    pdf_root = package_root / "pdf"
+    row = {
+        "id": job_id, "external_id": job_id, "source": payload.get("source", ""), "operation": operation,
+        "property_type": details.get("property_type", "apartment"), "title": translations.get("uk", {}).get("title", payload.get("title", "")),
+        "description": payload.get("text", ""), "ai_description": translations.get("uk", {}).get("text", ""),
+        "price_uah": prices.get("UAH", ""), "price_usd": prices.get("USD", ""), "price_eur": prices.get("EUR", ""),
+        "area": details.get("area", ""), "floor": details.get("floor", ""), "floors_total": details.get("total_floors", ""),
+        "rooms": details.get("rooms", ""), "district": details.get("district", ""), "city": details.get("city", ""),
+        "street": details.get("address", ""), "residential_complex": details.get("residential_complex", ""),
+        "metro_station": details.get("metro_station", ""), "url": payload.get("source", ""),
+        "photo_url": (payload.get("images") or [""])[0], "photos": json.dumps(payload.get("images", []), ensure_ascii=False),
+        "telegraph_url": telegraph.get("uk", ""), "telegraph_url_en": telegraph.get("en", ""),
+        "pdf_url": f"{PUBLIC_BASE_URL}/packages/{job_id}/pdf/uk.pdf" if (pdf_root / "uk.pdf").is_file() and PUBLIC_BASE_URL else "",
+        "pdf_url_en": f"{PUBLIC_BASE_URL}/packages/{job_id}/pdf/en.pdf" if (pdf_root / "en.pdf").is_file() and PUBLIC_BASE_URL else "",
+        "pdf_path": str(pdf_root / "uk.pdf") if (pdf_root / "uk.pdf").is_file() else "",
+        "pdf_path_en": str(pdf_root / "en.pdf") if (pdf_root / "en.pdf").is_file() else "",
+        "pdf_generated_at": datetime.now(timezone.utc).isoformat() if pdf_language else "",
+        "status": "published" if telegraph.get("uk") or telegraph.get("en") else "pdf_generated",
+        "created_at": manifest.get("created_at", ""), "updated_at": datetime.now(timezone.utc).isoformat(),
+        "parsed_at": manifest.get("created_at", ""), "ai_title": translations.get("uk", {}).get("title", ""),
+        "ai_description": translations.get("uk", {}).get("text", ""),
+    }
+    envelope = {"spreadsheet_id": "1UmvU7YjDgBpsTBEH4TLIcuVwvkeHzrle6_B6eXUDTU0", "sheet": tab, "key": job_id, "event": event, "secret": SHEETS_WEBHOOK_SECRET, "row": row}
+    SHEETS_OUTBOX_ROOT.mkdir(parents=True, exist_ok=True)
+    outbox_file = SHEETS_OUTBOX_ROOT / f"{job_id}.json"
+    outbox_file.write_text(json.dumps(envelope, ensure_ascii=False, indent=2), encoding="utf-8")
+    if SHEETS_WEBHOOK_URL:
+        try:
+            headers = {"Content-Type": "application/json"}
+            if SHEETS_WEBHOOK_SECRET:
+                headers["X-Kyiv-Estate-Signature"] = SHEETS_WEBHOOK_SECRET
+            requests.post(SHEETS_WEBHOOK_URL, json=envelope, headers=headers, timeout=12).raise_for_status()
+        except requests.RequestException as error:
+            print(f"Sheets sync queued for {job_id}: {error}", flush=True)
+
+
 def make_pdf(payload):
     try:
         from reportlab.lib import colors
@@ -1765,7 +1829,15 @@ def make_pdf(payload):
             Paragraph(f"{contacts_label}: " + " · ".join(pdf_contacts), normal),
         ])
     document.build(story)
-    return output.getvalue()
+    body = output.getvalue()
+    job_id = re.sub(r"[^a-zA-Z0-9_-]", "", str(payload.get("internal_id", "")))
+    if job_id:
+        pdf_root = PACKAGES_ROOT / job_id / "pdf"
+        pdf_root.mkdir(parents=True, exist_ok=True)
+        pdf_path = pdf_root / ("en.pdf" if language == "en" else "uk.pdf")
+        pdf_path.write_bytes(body)
+        sync_sheet_record(payload, "pdf", language)
+    return body
 
 
 def reply(start_response, status, data):
@@ -1825,7 +1897,7 @@ def app(environ, start_response):
             requested = (PACKAGES_ROOT / path.removeprefix("/packages/")).resolve()
             if PACKAGES_ROOT.resolve() not in requested.parents or not requested.is_file():
                 return reply(start_response, "404 Not Found", {"error": "Не знайдено"})
-            content_type = "text/html; charset=utf-8" if requested.suffix == ".html" else "application/json; charset=utf-8" if requested.suffix == ".json" else "image/png" if requested.suffix == ".png" else "image/webp" if requested.suffix == ".webp" else "image/jpeg"
+            content_type = "text/html; charset=utf-8" if requested.suffix == ".html" else "application/json; charset=utf-8" if requested.suffix == ".json" else "application/pdf" if requested.suffix == ".pdf" else "image/png" if requested.suffix == ".png" else "image/webp" if requested.suffix == ".webp" else "image/jpeg"
             body = requested.read_bytes()
             start_response("200 OK", [("Content-Type", content_type), ("Content-Length", str(len(body)))])
             return [body]
