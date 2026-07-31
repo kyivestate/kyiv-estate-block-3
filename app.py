@@ -1729,6 +1729,23 @@ def sync_sheet_record(payload, event, pdf_language=""):
         "parsed_at": manifest.get("created_at", ""), "ai_title": translations.get("uk", {}).get("title", ""),
         "ai_description": translations.get("uk", {}).get("text", ""),
     }
+    parsed_fields = (
+        "commission", "agent_type", "agent_name", "agent_phone", "commercial_type", "commercial_subtype",
+        "price_amount", "price_currency", "price_period", "price_per_m2", "price_per_m2_period",
+        "source_price_raw", "vat_included", "opex_amount", "utilities_included", "deposit_months",
+        "rent_free_months", "minimum_lease_months", "indexation_terms", "sale_with_tenant", "tenant_name",
+        "cap_rate", "area_total_m2", "area_usable_m2", "floor_label", "ceiling_height_m", "layout_type",
+        "condition", "fitout", "building_class", "year_built", "separate_entrance", "facade", "showcase_windows",
+        "parking_spaces", "loading_dock", "ramp", "freight_elevator", "electric_power_kw", "electricity_backup",
+        "generator", "water_supply", "sewerage", "heating_type", "ventilation", "air_conditioning",
+        "fire_safety", "security", "internet", "shelter_distance_m", "permitted_use", "full_address",
+        "address_confidence", "latitude", "longitude", "advertiser_type", "contact_name", "agency_name",
+        "phones", "commission_text", "contact_visibility", "extraction_confidence", "validation_errors",
+        "raw_listing_id", "published_at", "last_seen_at", "price_per_m2_uah", "price_per_m2_usd",
+        "price_per_m2_eur", "price_per_m2_currency", "data_completeness", "ai_quality_score",
+    )
+    for field in parsed_fields:
+        row[field] = details.get(field, payload.get(field, ""))
     envelope = {"spreadsheet_id": "1UmvU7YjDgBpsTBEH4TLIcuVwvkeHzrle6_B6eXUDTU0", "sheet": tab, "key": job_id, "event": event, "secret": SHEETS_WEBHOOK_SECRET, "row": row}
     SHEETS_OUTBOX_ROOT.mkdir(parents=True, exist_ok=True)
     outbox_file = SHEETS_OUTBOX_ROOT / f"{job_id}.json"
