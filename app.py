@@ -1713,7 +1713,10 @@ def sync_sheet_record(payload, event, pdf_language=""):
             headers = {"Content-Type": "application/json"}
             if SHEETS_WEBHOOK_SECRET:
                 headers["X-Kyiv-Estate-Signature"] = SHEETS_WEBHOOK_SECRET
-            requests.post(SHEETS_WEBHOOK_URL, json=envelope, headers=headers, timeout=12).raise_for_status()
+            response = requests.post(SHEETS_WEBHOOK_URL, json=envelope, headers=headers, timeout=12)
+            response.raise_for_status()
+            if not response.json().get("ok"):
+                raise RuntimeError("Google Sheets rejected the publication record")
         except requests.RequestException as error:
             print(f"Sheets sync queued for {job_id}: {error}", flush=True)
 
