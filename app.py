@@ -73,7 +73,10 @@ SOURCE_LISTINGS_ROOT = Path(os.environ.get("KYIV_ESTATE_SOURCE_LISTINGS_ROOT", "
 AI_REQUIRED = os.environ.get("KYIV_ESTATE_AI_REQUIRED", "false").lower() == "true"
 AI_TIMEOUT_SECONDS = max(60, int(os.environ.get("KYIV_ESTATE_AI_TIMEOUT_SECONDS", "1800")))
 MAX_PHOTOS = max(1, min(100, int(os.environ.get("KYIV_ESTATE_MAX_PHOTOS", "100"))))
-SHEETS_WEBHOOK_URL = os.environ.get("KYIV_ESTATE_SHEETS_WEBHOOK_URL", "").strip()
+SHEETS_WEBHOOK_URL = os.environ.get(
+    "KYIV_ESTATE_SHEETS_WEBHOOK_URL",
+    "https://script.google.com/macros/s/AKfycbwKC9uWanGXZVgQPDwlEwj9gYdxL65A6IyVRHxxLWQP4BVGDRRc1WcwPzqgmZfXRS8H/exec",
+).strip()
 SHEETS_WEBHOOK_SECRET = os.environ.get("KYIV_ESTATE_SHEETS_WEBHOOK_SECRET", "").strip()
 SHEETS_OUTBOX_ROOT = DATA_ROOT / "sheets_outbox"
 REQUEST_HEADERS = {
