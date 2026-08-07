@@ -808,16 +808,28 @@ def visually_unique_preview_urls(urls):
 
 
 def display_price(details, prices):
-    """Show one source price; converted currencies remain available in the editor."""
+    """Render the price in all available currencies, in a stable order."""
+    symbols = {"UAH": "грн", "USD": "$", "EUR": "€"}
+    def format_amount(value):
+        number = parse_number(value)
+        if number is not None and number.is_integer():
+            return f"{number:,.0f}".replace(",", " ")
+        return str(value).strip().replace("\u00a0", " ")
+
+    converted = []
+    for code in ("UAH", "USD", "EUR"):
+        value = prices.get(code) if isinstance(prices, dict) else ""
+        if value:
+            converted.append(f"{format_amount(value)} {symbols[code]}")
+    if len(converted) >= 2:
+        return " • ".join(converted)
     value = str(details.get("price", "")).strip()
     currency = str(details.get("currency", "")).upper()
     if value and currency:
-        number = parse_number(value)
-        formatted = f"{number:,.0f}".replace(",", " ") if number is not None and number.is_integer() else value.replace("\u00a0", " ")
-        return f"{formatted} { {'USD': '$', 'EUR': '€', 'UAH': 'грн'}.get(currency, currency) }"
+        return f"{format_amount(value)} {symbols.get(currency, currency)}"
     for code in ("USD", "EUR", "UAH"):
         if prices.get(code):
-            return f"{prices[code]} { {'USD': '$', 'EUR': '€', 'UAH': 'грн'}[code] }"
+            return f"{format_amount(prices[code])} {symbols[code]}"
     return ""
 
 
@@ -839,10 +851,10 @@ def property_detail_rows(details, language):
     kind = details.get("property_type", "apartment")
     rows = [(labels["area"], area)]
     if kind == "house":
-        rows.extend([(labels["rooms"], rooms), (labels["land"], str(details.get("land_area", ""))), (labels["storeys"], str(details.get("total_floors", "")))])
+        rows.extend([(labels["rooms"], rooms), (labels["land"], str(details.get("land_area", "")))])
     elif kind == "commercial":
-        rows.append((labels["floor"], str(details.get("floor", ""))))
-    else:
+        pass
+    else:  # apartment: floor and total floors are apartment-only facts
         floor = str(details.get("floor", ""))
         total_floors = str(details.get("total_floors", ""))
         floor_value = "/".join(value for value in (floor, total_floors) if value)
