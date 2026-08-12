@@ -325,6 +325,16 @@ def listing_photo_urls(images, page_url):
     return accepted
 
 
+def listing_photo_audit(discovered, listing_only, unique_urls, unique_visuals):
+    return {
+        "discovered": discovered,
+        "listing_only": listing_only,
+        "unique_urls": unique_urls,
+        "unique_visuals": unique_visuals,
+        "duplicates_removed": max(0, listing_only - unique_visuals),
+    }
+
+
 def extract_listing(source_url):
     source_url = normalize_listing_input(source_url)
     reject_unsafe_url(source_url)
@@ -400,8 +410,12 @@ def extract_listing(source_url):
     details.update(extract_contact_details(page_plain))
     details["address"] = extract_address(detail_text, response.url, html.unescape(title).strip())
     prices = convert_prices(details.get("price"), details.get("currency"))
+    discovered_image_count = len(clean_images)
     clean_images = listing_photo_urls(clean_images, response.url)
-    clean_images = visually_unique_preview_urls(clean_images)
+    listing_image_count = len(clean_images)
+    unique_url_images = clean_image_urls(clean_images)
+    clean_images, media_audit = visually_unique_preview_urls(unique_url_images)
+    media_audit = listing_photo_audit(discovered_image_count, listing_image_count, len(unique_url_images), len(clean_images))
     listing = {
         "internal_id": job_id,
         "title": clean_title,
@@ -409,6 +423,7 @@ def extract_listing(source_url):
         "original_description": original_description,
         "ai_description": editorial_ai_text(original_description, clean_title),
         "images": clean_images,
+        "media_audit": media_audit,
         "source": response.url,
         "details": details,
         "prices": prices,
@@ -732,7 +747,7 @@ def visually_unique_preview_urls(urls):
                 continue
             fingerprints.append(signature)
         result.append(url)
-    return result
+    return result, listing_photo_audit(len(urls), len(urls), len(urls), len(result))
 
 
 def display_price(details, prices):
@@ -1589,6 +1604,11 @@ def create_package(payload):
         "en": f"/packages/{job_id}/en.html",
         "manifest": f"/packages/{job_id}/manifest.json",
         "photo_count": len(approved),
+        "media_audit": {
+            "requested_source_photos": len(payload["images"]),
+            "verified_photos": len(approved),
+            "duplicates_removed": max(0, len(payload["images"]) - len(approved)),
+        },
         "processed": [f"/packages/{job_id}/photos/{item['filename']}" for item in approved],
         "originals": [f"/packages/{job_id}/originals/{item['filename']}" if item.get("original_path") else "" for item in approved],
     }
