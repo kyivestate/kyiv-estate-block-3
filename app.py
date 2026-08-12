@@ -600,7 +600,14 @@ def clean_image_urls(image_urls):
             continue
         parsed = urlparse(value.strip())
         olx_file = re.search(r"/v1/files/([^/;?]+)/image", parsed.path, re.IGNORECASE)
-        normalized = ("olx:" + olx_file.group(1).lower()) if olx_file and parsed.netloc.lower().endswith("olxcdn.com") else urlunparse((parsed.scheme.lower(), parsed.netloc.lower(), parsed.path, "", "", ""))
+        rieltor_file = re.search(r"/(?:images/)?offers/(.+)$", parsed.path, re.IGNORECASE)
+        host = parsed.netloc.lower()
+        if olx_file and host.endswith("olxcdn.com"):
+            normalized = "olx:" + olx_file.group(1).lower()
+        elif rieltor_file and host in {"market-images.lunstatic.net", "rieltor-images.lunstatic.net"}:
+            normalized = "rieltor:" + rieltor_file.group(1).lower()
+        else:
+            normalized = urlunparse((parsed.scheme.lower(), host, parsed.path, "", "", ""))
         if normalized in seen:
             continue
         seen.add(normalized)
