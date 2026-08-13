@@ -13,6 +13,7 @@ import sqlite3
 import threading
 import time
 import uuid
+import zipfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -1822,6 +1823,34 @@ def make_pdf(payload):
     return body
 
 
+def make_photo_archive(payload):
+    images = clean_image_urls(payload.get("images", []))
+    if not images:
+        raise ValueError("Немає фотографій для завантаження.")
+    output = BytesIO()
+    saved_hashes = set()
+    with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=6) as archive:
+        for url in images:
+            try:
+                response = requests.get(url, headers=REQUEST_HEADERS, timeout=20)
+                response.raise_for_status()
+                content_type = response.headers.get("Content-Type", "").lower()
+                content = response.content
+                if not content_type.startswith("image/") or len(content) < 1024 or len(content) > 30 * 1024 * 1024:
+                    continue
+                digest = hashlib.sha256(content).hexdigest()
+                if digest in saved_hashes:
+                    continue
+                saved_hashes.add(digest)
+                extension = ".png" if "png" in content_type else ".webp" if "webp" in content_type else ".jpg"
+                archive.writestr(f"{len(saved_hashes):02d}{extension}", content)
+            except requests.RequestException:
+                continue
+    if not saved_hashes:
+        raise ValueError("Не вдалося завантажити фотографії оголошення.")
+    return output.getvalue(), len(saved_hashes)
+
+
 def reply(start_response, status, data):
     body = json.dumps(data, ensure_ascii=False).encode()
     start_response(status, [("Content-Type", "application/json; charset=utf-8"), ("Content-Length", str(len(body)))])
@@ -1830,6 +1859,11 @@ def reply(start_response, status, data):
 
 def pdf_reply(start_response, body):
     start_response("200 OK", [("Content-Type", "application/pdf"), ("Content-Disposition", "attachment; filename=listing.pdf"), ("Content-Length", str(len(body)))])
+    return [body]
+
+
+def photo_archive_reply(start_response, body, filename):
+    start_response("200 OK", [("Content-Type", "application/zip"), ("Content-Disposition", f'attachment; filename="{filename}"'), ("Content-Length", str(len(body)))])
     return [body]
 
 
@@ -1883,7 +1917,7 @@ def app(environ, start_response):
             body = requested.read_bytes()
             start_response("200 OK", [("Content-Type", content_type), ("Content-Length", str(len(body)))])
             return [body]
-        if path in {"/api/extract", "/api/publish", "/api/translate", "/api/pdf", "/api/package"} and method == "POST":
+        if path in {"/api/extract", "/api/publish", "/api/translate", "/api/pdf", "/api/photos", "/api/package"} and method == "POST":
             length = int(environ.get("CONTENT_LENGTH") or 0)
             if length <= 0 or length > 2_000_000:
                 return reply(start_response, "413 Payload Too Large", {"error": "Некоректний розмір запиту."})
@@ -1894,6 +1928,10 @@ def app(environ, start_response):
                 return reply(start_response, "200 OK", {"title": translate_to_english(str(payload.get("title", ""))), "text": translate_to_english(str(payload.get("text", "")))})
             if path.endswith("pdf"):
                 return pdf_reply(start_response, make_pdf(payload))
+            if path.endswith("photos"):
+                body, count = make_photo_archive(payload)
+                job_id = re.sub(r"[^a-zA-Z0-9_-]", "", str(payload.get("internal_id", ""))) or "listing"
+                return photo_archive_reply(start_response, body, f"{job_id}-photos-{count}.zip")
             if path.endswith("package"):
                 return reply(start_response, "200 OK", create_package(payload))
             language = str(payload.get("language", "uk"))
